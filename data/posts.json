@@ -63,7 +63,10 @@
         "text": ":)",
         "createdAt": "2026-11-13T12:01:05.515Z",
         "parentId": "c-1794571133398-bxi",
-        "replyTo": "Викси"
+        "replyTo": "Викси",
+        "likes": [
+          "Викси"
+        ]
       }
     ],
     "mediaUrl": "./uploads/post-1794570516662-ja3q_0.jpg",
