@@ -13,6 +13,14 @@
         "author": "Miralys",
         "text": "а потом я просто нахуярился в слюни",
         "createdAt": "2026-11-13T11:55:26.528Z"
+      },
+      {
+        "id": "c-1794571133398-bxi",
+        "author": "Викси",
+        "text": "это до:",
+        "createdAt": "2026-11-13T11:58:53.398Z",
+        "parentId": "c-1794570926528-m80",
+        "replyTo": "Miralys"
       }
     ],
     "mediaUrl": "./uploads/post-1794570516662-ja3q_0.jpg",
