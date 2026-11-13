@@ -423,7 +423,9 @@
         "id": "c-1794573748586-hb5",
         "author": "Викииич",
         "text": "да я снимааааю!",
-        "likes": [],
+        "likes": [
+          "Miralys"
+        ],
         "createdAt": "2026-11-13T12:42:28.587Z",
         "parentId": "c-1794571335592-1lk",
         "replyTo": "Miralys"
