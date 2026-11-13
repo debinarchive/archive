@@ -40,10 +40,10 @@
     carouselMove: null,
     replyToComment: null,
     threadToggles: {},
-    activeModalPostId: null
+    activeModalPostId: null,
+    pushedPostHistory: false
   };
 
-  // Очередь записей на GitHub, чтобы быстрые клики по лайкам не вызывали конфликтов
   let ghWriteQueue = Promise.resolve();
   function enqueueGhWrite(task) {
     const run = ghWriteQueue.then(task, task);
@@ -170,7 +170,7 @@
     }
   }
 
-  // ====== УТИЛИТЫ ======
+  // ====== УТИЛИТЫ И ССЫЛКИ НА ПОСТЫ ======
   function esc(str) {
     return String(str ?? "")
       .replace(/&/g, "&amp;")
@@ -184,6 +184,22 @@
     const q = new URLSearchParams(window.location.search);
     if (q.has("dev")) return true;
     return /(?:^|[?&#/])dev(?:$|[=&])/i.test(window.location.hash);
+  }
+
+  function getPostIdFromUrl() {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("post")) return q.get("post");
+    const hash = window.location.hash.replace(/^#/, "");
+    if (!hash) return "";
+    const hp = new URLSearchParams(hash);
+    if (hp.get("post")) return hp.get("post");
+    const m = hash.match(/(?:^|&)post=([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : "";
+  }
+
+  function buildPostShareUrl(postId) {
+    const base = window.location.href.split(/[?#]/)[0];
+    return `${base}#post=${encodeURIComponent(postId)}`;
   }
 
   function formatDate(iso) {
@@ -841,13 +857,11 @@
     const likes = Array.isArray(post.likes) ? post.likes : [];
     const liked = hasUserLiked(likes);
 
-    // Обновляем карточку в сетке без перезагрузки картинок
     document.querySelectorAll(`[data-like-post="${CSS.escape(post.id)}"]`).forEach(btn => {
       btn.classList.toggle("liked", liked);
       btn.innerHTML = `${liked ? "♥" : "♡"} ${likes.length}`;
     });
 
-    // Обновляем кнопку внутри открытой модалки поста
     if (state.activeModalPostId === post.id) {
       renderPostLikeBar(post);
     }
@@ -864,11 +878,29 @@
         <button type="button" id="modal-like-post-btn" class="post-like-btn ${liked ? "liked" : ""}">
           ${liked ? "♥" : "♡"} Нравится · ${likes.length}
         </button>
+        <button type="button" id="modal-share-post-btn" class="post-like-btn" title="Скопировать прямую ссылку на пост">
+          🔗 Ссылка
+        </button>
         ${likes.length ? `<span class="post-liked-by">Оценили: ${likes.map(u => esc(u)).join(", ")}</span>` : ""}
       </div>
     `;
 
     document.getElementById("modal-like-post-btn").onclick = () => togglePostLike(post.id);
+    document.getElementById("modal-share-post-btn").onclick = async () => {
+      const shareBtn = document.getElementById("modal-share-post-btn");
+      const url = buildPostShareUrl(post.id);
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(url);
+          shareBtn.textContent = "✓ Скопировано!";
+          setTimeout(() => {
+            if (document.body.contains(shareBtn)) shareBtn.textContent = "🔗 Ссылка";
+          }, 1800);
+          return;
+        }
+      } catch {}
+      prompt("Скопируй ссылку на пост:", url);
+    };
   }
 
   async function togglePostLike(postId) {
@@ -965,13 +997,25 @@
   }
 
   // ====== ПРОСМОТР ПОСТА И ДРЕВОВИДНЫЕ КОММЕНТАРИИ ======
-  function openPostModal(postId) {
+  function openPostModal(postId, fromHistory = false) {
     const post = state.posts.find(p => p.id === postId);
     if (!post) return;
 
     state.activeModalPostId = postId;
     state.carouselMove = null;
     state.replyToComment = null;
+
+    if (!fromHistory && getPostIdFromUrl() !== postId) {
+      try {
+        history.pushState(
+          { modalPostId: postId },
+          "",
+          `${window.location.pathname}${window.location.search}#post=${encodeURIComponent(postId)}`
+        );
+        state.pushedPostHistory = true;
+      } catch {}
+    }
+
     const titleEl = document.getElementById("view-modal-title");
     const bodyEl = document.getElementById("view-modal-body");
     titleEl.textContent = post.title;
@@ -1291,12 +1335,10 @@
       };
     }
 
-    // Лайк на коммент
     wrap.querySelectorAll("[data-like-comment]").forEach(btn => {
       btn.onclick = () => toggleCommentLike(post.id, btn.dataset.likeComment);
     });
 
-    // Ответ на коммент
     wrap.querySelectorAll("[data-reply-id]").forEach(btn => {
       btn.onclick = () => {
         if (!state.currentUser) {
@@ -1944,18 +1986,31 @@
   // ====== МОДАЛКИ И СОБЫТИЯ ======
   function openModal(id) { document.getElementById(id).classList.remove("hidden"); }
 
-  function closeModal(id) {
+  function closeModal(id, fromHistory = false) {
     const modal = document.getElementById(id);
-    if (!modal) return;
+    if (!modal || modal.classList.contains("hidden")) return;
+
     modal.querySelectorAll("video, audio").forEach(m => {
       try { m.pause(); m.removeAttribute("src"); m.load(); } catch {}
     });
     modal.querySelectorAll("iframe").forEach(f => { f.src = "about:blank"; });
+
     if (id === "modal-view") {
       document.getElementById("view-modal-body").innerHTML = "";
       state.carouselMove = null;
       state.replyToComment = null;
       state.activeModalPostId = null;
+
+      if (!fromHistory) {
+        if (state.pushedPostHistory) {
+          state.pushedPostHistory = false;
+          history.back();
+        } else if (getPostIdFromUrl()) {
+          history.replaceState(null, "", window.location.pathname + window.location.search);
+        }
+      } else {
+        state.pushedPostHistory = false;
+      }
     }
     modal.classList.add("hidden");
   }
@@ -1969,14 +2024,16 @@
   }
 
   function handleInviteHash() {
-    const m = window.location.hash.match(/key=([^&]+)/);
-    if (m && CFG.ENCRYPTED_TOKEN) {
-      const phrase = decodeURIComponent(m[1]);
-      const tok = decryptToken(CFG.ENCRYPTED_TOKEN, phrase);
-      if (tok) {
-        saveUnlockedToken(tok);
-        history.replaceState(null, "", window.location.pathname + window.location.search);
-      }
+    const rawHash = window.location.hash.replace(/^#/, "");
+    if (!rawHash) return;
+    const hp = new URLSearchParams(rawHash);
+    const key = hp.get("key");
+    if (key && CFG.ENCRYPTED_TOKEN) {
+      const tok = decryptToken(CFG.ENCRYPTED_TOKEN, key);
+      if (tok) saveUnlockedToken(tok);
+      hp.delete("key");
+      const rest = hp.toString();
+      history.replaceState(null, "", window.location.pathname + window.location.search + (rest ? `#${rest}` : ""));
     }
   }
 
@@ -1992,6 +2049,26 @@
     await loadData();
     updateCounts();
     renderFeed();
+
+    // Открываем пост, если зашли по прямой ссылке #post=...
+    const initialPostId = getPostIdFromUrl();
+    if (initialPostId) {
+      if (state.posts.some(p => p.id === initialPostId)) {
+        openPostModal(initialPostId, true);
+      } else {
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
+    }
+
+    window.addEventListener("popstate", () => {
+      const pid = getPostIdFromUrl();
+      const viewModal = document.getElementById("modal-view");
+      if (pid) {
+        if (state.activeModalPostId !== pid) openPostModal(pid, true);
+      } else if (viewModal && !viewModal.classList.contains("hidden")) {
+        closeModal("modal-view", true);
+      }
+    });
 
     document.querySelectorAll("[data-tab]").forEach(btn => {
       btn.addEventListener("click", () => {
