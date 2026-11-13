@@ -1,5 +1,18 @@
 [
   {
+    "id": "post-1794560075035-k0ez",
+    "type": "books",
+    "title": "тест",
+    "text": "я тестирую \n---\nразрыв страницы\n---\nработает?",
+    "author": "Miralys",
+    "createdAt": "2026-11-13T08:54:35.035Z",
+    "tags": [
+      "нет"
+    ],
+    "bookAuthor": "Miralys",
+    "bookYear": "2026"
+  },
+  {
     "id": "book-djan-2025",
     "type": "books",
     "featured": true,
