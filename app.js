@@ -1575,6 +1575,173 @@
     }
   }
 
+  // ====== ПРОФИЛЬ И СМЕНА НИКНЕЙМА ======
+  function renameUserInPosts(postsList, oldLower, newName) {
+    const swapName = (val) => (String(val || "").toLowerCase() === oldLower ? newName : val);
+    const swapArr = (arr) => (Array.isArray(arr) ? arr.map(swapName) : arr);
+    return (Array.isArray(postsList) ? postsList : []).map(p => ({
+      ...p,
+      author: swapName(p.author),
+      likes: swapArr(p.likes),
+      comments: Array.isArray(p.comments)
+        ? p.comments.map(c => ({
+            ...c,
+            author: swapName(c.author),
+            replyTo: c.replyTo ? swapName(c.replyTo) : c.replyTo,
+            likes: swapArr(c.likes)
+          }))
+        : p.comments
+    }));
+  }
+
+  function ensureProfileModal() {
+    let modal = document.getElementById("modal-profile");
+    if (modal) return modal;
+
+    modal = document.createElement("div");
+    modal.id = "modal-profile";
+    modal.className = "modal-backdrop hidden";
+    modal.innerHTML = `
+      <div class="modal-box modal-sm">
+        <div class="modal-head">
+          <h3>Мой аккаунт</h3>
+          <button class="modal-close" data-close="modal-profile">✕</button>
+        </div>
+        <div class="modal-body" id="profile-modal-body"></div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    modal.querySelector("[data-close='modal-profile']").addEventListener("click", () => closeModal("modal-profile"));
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) closeModal("modal-profile");
+    });
+    return modal;
+  }
+
+  function openProfileModal() {
+    if (!state.currentUser) return;
+    ensureProfileModal();
+    const body = document.getElementById("profile-modal-body");
+
+    const renameSection = state.currentUser.isCreator
+      ? `<p class="muted-note">Создатель <strong>Miralys</strong> — имя неприкасаемое, менять нельзя.</p>`
+      : `
+        <form id="profile-rename-form" class="ia-form" style="margin-bottom:1.4rem;">
+          <label>
+            Новый никнейм (пароль останется старый)
+            <input type="text" id="profile-new-name" required maxlength="24" value="${esc(state.currentUser.username)}" autocomplete="off">
+          </label>
+          <div id="profile-error" class="form-error hidden"></div>
+          <div id="profile-status" class="form-status hidden"></div>
+          <button type="submit" id="profile-rename-btn" class="btn-primary full-btn">Сменить никнейм</button>
+        </form>
+      `;
+
+    body.innerHTML = `
+      <div class="user-row ${state.currentUser.isCreator ? "creator-row" : ""}" style="margin-bottom:1.4rem;">
+        <div>
+          <strong>${esc(state.currentUser.username)}</strong>
+          <div class="muted-note" style="margin:0;">Текущий профиль</div>
+        </div>
+        <span class="${state.currentUser.isCreator ? "badge-creator" : "badge-member"}">${state.currentUser.isCreator ? "Создатель" : "Участник"}</span>
+      </div>
+      ${renameSection}
+      <div style="border-top:1px solid #eee;padding-top:1.2rem;">
+        <button type="button" id="profile-logout-btn" class="btn-danger full-btn">Выйти из аккаунта</button>
+      </div>
+    `;
+
+    const renameForm = document.getElementById("profile-rename-form");
+    if (renameForm) {
+      renameForm.onsubmit = async (e) => {
+        e.preventDefault();
+        await handleRenameNickname();
+      };
+    }
+
+    document.getElementById("profile-logout-btn").onclick = () => {
+      state.currentUser = null;
+      localStorage.removeItem(LS_SESSION);
+      updateAuthUI();
+      closeModal("modal-profile");
+    };
+
+    openModal("modal-profile");
+  }
+
+  async function handleRenameNickname() {
+    const errBox = document.getElementById("profile-error");
+    const statusBox = document.getElementById("profile-status");
+    const btn = document.getElementById("profile-rename-btn");
+    errBox.classList.add("hidden");
+    statusBox.classList.add("hidden");
+
+    const showErr = (m) => { errBox.textContent = m; errBox.classList.remove("hidden"); };
+
+    const oldName = state.currentUser.username;
+    const oldLower = oldName.toLowerCase();
+    const newName = document.getElementById("profile-new-name").value.trim();
+    const newLower = newName.toLowerCase();
+
+    if (!newName) return showErr("Введи новый ник!");
+    if (newName === oldName) return showErr("Это и так твой текущий ник!");
+    if (newLower === "miralys") return showErr("Аккаунт не зарегистрирован");
+    if (state.users.some(u => u.username.toLowerCase() === newLower && u.username.toLowerCase() !== oldLower)) {
+      return showErr("Такой ник уже занят кем-то другим!");
+    }
+    if (!ensureTokenInteractive()) return;
+
+    btn.disabled = true;
+    btn.textContent = "Переименовываем...";
+    try {
+      if (IS_GITHUB_READY) {
+        state.users = await ghUpdateJson("data/users.json", list => {
+          const conflict = list.some(u => u.username.toLowerCase() === newLower && u.username.toLowerCase() !== oldLower);
+          if (conflict) throw new Error("Этот ник только что занял кто-то другой!");
+          return list.map(u => {
+            if (u.username.toLowerCase() !== oldLower) return u;
+            return {
+              ...u,
+              username: newName,
+              authKey: (u.authKey || u.username).toLowerCase()
+            };
+          });
+        }, `Rename user ${oldName} -> ${newName}`);
+
+        statusBox.textContent = "Обновляем посты и комменты...";
+        statusBox.classList.remove("hidden");
+
+        state.posts = await ghUpdateJson(
+          "data/posts.json",
+          list => renameUserInPosts(list, oldLower, newName),
+          `Update author ${oldName} -> ${newName}`
+        );
+
+        const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]");
+        localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(renameUserInPosts(opt, oldLower, newName)));
+      } else {
+        state.users = state.users.map(u => u.username.toLowerCase() === oldLower
+          ? { ...u, username: newName, authKey: (u.authKey || u.username).toLowerCase() }
+          : u
+        );
+        state.posts = renameUserInPosts(state.posts, oldLower, newName);
+        localStorage.setItem(LS_LOCAL_USERS, JSON.stringify(state.users));
+        localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(state.posts));
+      }
+
+      state.currentUser.username = newName;
+      localStorage.setItem(LS_SESSION, JSON.stringify(state.currentUser));
+      updateAuthUI();
+      renderFeed();
+      closeModal("modal-profile");
+    } catch (err) {
+      showErr("Не вышло сменить ник: " + err.message);
+      btn.disabled = false;
+      btn.textContent = "Сменить никнейм";
+    }
+  }
+
   // ====== АВТОРИЗАЦИЯ И ШИЗА С MIRALYS ======
   function updateAuthUI() {
     const lbl = document.getElementById("nav-auth-label");
@@ -1627,12 +1794,12 @@
       return;
     }
 
-    const passHash = sha256Hex("DEBIN_USER:" + lower + ":" + password);
-
     if (state.authMode === "login") {
       const found = state.users.find(u => u.username.toLowerCase() === lower);
       if (!found) return showErr("Аккаунт не зарегистрирован");
-      if (found.passHash !== passHash) return showErr("Неверный пароль.");
+      const authKey = (found.authKey || found.username).toLowerCase();
+      const expectedHash = sha256Hex("DEBIN_USER:" + authKey + ":" + password);
+      if (found.passHash !== expectedHash) return showErr("Неверный пароль.");
 
       state.currentUser = { username: found.username, isCreator: false };
       localStorage.setItem(LS_SESSION, JSON.stringify(state.currentUser));
@@ -1651,6 +1818,7 @@
       saveUnlockedToken(tok);
     }
 
+    const passHash = sha256Hex("DEBIN_USER:" + lower + ":" + password);
     const newUser = {
       username: usernameRaw,
       passHash,
@@ -2050,7 +2218,6 @@
     updateCounts();
     renderFeed();
 
-    // Открываем пост, если зашли по прямой ссылке #post=...
     const initialPostId = getPostIdFromUrl();
     if (initialPostId) {
       if (state.posts.some(p => p.id === initialPostId)) {
@@ -2113,11 +2280,7 @@
 
     document.getElementById("nav-auth-btn").addEventListener("click", () => {
       if (state.currentUser) {
-        if (confirm(`Выйти из аккаунта ${state.currentUser.username}?`)) {
-          state.currentUser = null;
-          localStorage.removeItem(LS_SESSION);
-          updateAuthUI();
-        }
+        openProfileModal();
       } else {
         syncAuthModalFields();
         openModal("modal-auth");
