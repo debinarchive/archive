@@ -1,5 +1,20 @@
 [
   {
+    "id": "post-1794570516662-ja3q",
+    "type": "photos",
+    "title": "смешнявка",
+    "text": "готовились к выпускному",
+    "author": "Викси",
+    "createdAt": "2026-11-13T11:48:46.469Z",
+    "tags": [],
+    "comments": [],
+    "mediaUrl": "./uploads/post-1794570516662-ja3q_0.jpg",
+    "mediaUrls": [
+      "./uploads/post-1794570516662-ja3q_0.jpg",
+      "./uploads/post-1794570516662-ja3q_1.jpg"
+    ]
+  },
+  {
     "id": "post-1794570323299-42ko",
     "type": "photos",
     "title": "сплю",
