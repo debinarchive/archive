@@ -7,7 +7,15 @@
     "author": "Викси",
     "createdAt": "2026-11-13T10:58:07.853Z",
     "tags": [],
-    "mediaUrl": "./uploads/post-1794567484714-6jf6.jpg"
+    "mediaUrl": "./uploads/post-1794567484714-6jf6.jpg",
+    "comments": [
+      {
+        "id": "c-1794569211795-9xv",
+        "author": "Miralys",
+        "text": "бля, я ебал",
+        "createdAt": "2026-11-13T11:26:51.795Z"
+      }
+    ]
   },
   {
     "id": "post-1794567431977-wcsd",
