@@ -21,7 +21,10 @@
         "text": "это до:",
         "createdAt": "2026-11-13T11:58:53.398Z",
         "parentId": "c-1794570926528-m80",
-        "replyTo": "Miralys"
+        "replyTo": "Miralys",
+        "likes": [
+          "Miralys"
+        ]
       },
       {
         "id": "c-1794571265515-eq2",
