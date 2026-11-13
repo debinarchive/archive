@@ -37,7 +37,9 @@
     currentUser: null,
     sessionMedia: {},
     selectedPhotoFiles: [],
-    carouselMove: null
+    carouselMove: null,
+    replyToComment: null,
+    threadToggles: {}
   };
 
   // ====== КРИПТОГРАФИЯ (ЧИСТЫЙ SHA-256) ======
@@ -279,9 +281,7 @@
       </div>
     `;
 
-    document.getElementById("pub-files-clear").onclick = () => {
-      clearSelectedPhotos();
-    };
+    document.getElementById("pub-files-clear").onclick = () => clearSelectedPhotos();
     box.querySelectorAll("[data-rm-photo]").forEach(btn => {
       btn.onclick = () => {
         const idx = Number(btn.dataset.rmPhoto);
@@ -513,7 +513,6 @@
     }
   }
 
-  // Фото -> WebP (на iPhone фоллбек в JPG, GIF оставляем живым)
   async function processImageForUpload(file) {
     if (file.type === "image/gif") {
       return { blob: file, ext: "gif", mime: "image/gif" };
@@ -612,6 +611,7 @@
     let users = [];
 
     if (IS_GITHUB_READY) {
+      let usedStaticFallback = false;
       try {
         const [pRes, uRes] = await Promise.all([
           ghGetFile("data/posts.json"),
@@ -620,6 +620,7 @@
         posts = pRes.data;
         users = uRes.data;
       } catch {
+        usedStaticFallback = true;
         const [pLoc, uLoc] = await Promise.all([
           fetch(`./data/posts.json?t=${Date.now()}`).then(r => r.json()).catch(() => []),
           fetch(`./data/users.json?t=${Date.now()}`).then(r => r.json()).catch(() => [])
@@ -628,19 +629,16 @@
         users = uLoc;
       }
 
-      const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]")
-        .filter(item => Date.now() - item._ts < 180000);
-      localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(opt));
-      const mapById = new Map(posts.map(p => [p.id, p]));
-      opt.forEach(item => {
-        if (!mapById.has(item.id)) posts.unshift(item);
-        else {
-          const existing = mapById.get(item.id);
-          if ((item.comments || []).length > (existing.comments || []).length) {
-            existing.comments = item.comments;
-          }
-        }
-      });
+      if (usedStaticFallback) {
+        const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]")
+          .filter(item => Date.now() - item._ts < 180000);
+        localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(opt));
+        const mapById = new Map(posts.map(p => [p.id, p]));
+        opt.forEach(item => {
+          if (!mapById.has(item.id)) posts.unshift(item);
+          else mapById.get(item.id).comments = item.comments || [];
+        });
+      }
     } else {
       try {
         const filePosts = await fetch("./data/posts.json").then(r => r.json());
@@ -803,12 +801,13 @@
     return { thoughts: "Мысль", quotes: "Цитата", video: "Видео", books: "Книга", photos: "Фото" }[type] || type;
   }
 
-  // ====== ПРОСМОТР ПОСТА, КАРУСЕЛЬ И КОММЕНТАРИИ ======
+  // ====== ПРОСМОТР ПОСТА И ДРЕВОВИДНЫЕ КОММЕНТАРИИ ======
   function openPostModal(postId) {
     const post = state.posts.find(p => p.id === postId);
     if (!post) return;
 
     state.carouselMove = null;
+    state.replyToComment = null;
     const titleEl = document.getElementById("view-modal-title");
     const bodyEl = document.getElementById("view-modal-body");
     titleEl.textContent = post.title;
@@ -930,7 +929,6 @@
           b.onclick = () => setSlide(Number(b.dataset.carIdx));
         });
 
-        // Свайпы на телефоне
         let touchX = 0;
         const stage = document.getElementById("car-stage");
         stage.addEventListener("touchstart", (e) => { touchX = e.changedTouches[0].clientX; }, { passive: true });
@@ -972,34 +970,117 @@
     openModal("modal-view");
   }
 
+  function buildCommentTree(comments) {
+    const list = Array.isArray(comments) ? comments : [];
+    const byId = new Map();
+    list.forEach(c => {
+      if (c && c.id) byId.set(c.id, { ...c, children: [], descCount: 0 });
+    });
+
+    const roots = [];
+    list.forEach(c => {
+      if (!c || !c.id) return;
+      const node = byId.get(c.id);
+      if (c.parentId && c.parentId !== c.id && byId.has(c.parentId)) {
+        byId.get(c.parentId).children.push(node);
+      } else {
+        roots.push(node);
+      }
+    });
+
+    const countDesc = (node, seen = new Set()) => {
+      if (seen.has(node.id)) return 0;
+      seen.add(node.id);
+      let total = 0;
+      for (const ch of node.children) {
+        total += 1 + countDesc(ch, seen);
+      }
+      node.descCount = total;
+      return total;
+    };
+    roots.forEach(r => countDesc(r));
+
+    return { roots, byId };
+  }
+
+  function renderCommentNode(node, depth, seen = new Set()) {
+    if (seen.has(node.id)) return "";
+    seen.add(node.id);
+
+    const isCreatorComment = (node.author || "").toLowerCase() === "miralys";
+    const canDelComment = state.currentUser && (
+      state.currentUser.isCreator ||
+      state.currentUser.username.toLowerCase() === (node.author || "").toLowerCase()
+    );
+
+    const hasReplies = node.children.length > 0;
+    let isExpanded;
+    if (state.threadToggles[node.id] !== undefined) {
+      isExpanded = state.threadToggles[node.id];
+    } else {
+      // До 2-го уровня и <= 3 ответов показываем сразу, глубже или длиннее — свёрнуто
+      isExpanded = depth < 2 && node.descCount <= 3;
+    }
+
+    const isReplyingHere = state.replyToComment && state.replyToComment.id === node.id;
+
+    const inlineReplyHtml = isReplyingHere ? `
+      <form id="inline-reply-form" class="inline-reply-box comment-form">
+        <div class="inline-reply-head">
+          <span>Ответ для <strong>@${esc(node.author)}</strong></span>
+          <button type="button" id="inline-reply-cancel" class="comment-cancel-btn">Отмена</button>
+        </div>
+        <textarea id="inline-reply-input" rows="2" required placeholder="Напиши ответ..."></textarea>
+        <div style="display:flex;justify-content:flex-end;">
+          <button type="submit" id="inline-reply-submit" class="btn-primary">Отправить ответ</button>
+        </div>
+      </form>
+    ` : "";
+
+    const repliesHtml = hasReplies && isExpanded
+      ? `<div class="comment-replies ${depth >= 2 ? "depth-capped" : ""}">
+           ${node.children.map(ch => renderCommentNode(ch, depth + 1, seen)).join("")}
+         </div>`
+      : "";
+
+    return `
+      <div class="comment-node">
+        <div class="comment-item">
+          <div class="comment-head">
+            <div>
+              <span class="comment-author">${esc(node.author)}</span>
+              ${isCreatorComment ? `<span class="comment-creator-tag">Создатель</span>` : ""}
+              ${node.replyTo ? `<span class="comment-reply-badge">↪ @${esc(node.replyTo)}</span>` : ""}
+            </div>
+            <div class="comment-meta-right">
+              <span>${formatDateTime(node.createdAt)}</span>
+              ${canDelComment ? `<button type="button" class="comment-del-btn" data-del-comment="${esc(node.id)}" title="Удалить">✕</button>` : ""}
+            </div>
+          </div>
+          <div class="comment-body">${esc(node.text)}</div>
+          <div class="comment-actions">
+            <button type="button" class="comment-action-btn" data-reply-id="${esc(node.id)}" data-reply-author="${esc(node.author)}">Ответить</button>
+            ${hasReplies ? `
+              <button type="button" class="comment-action-btn comment-toggle-btn" data-toggle-thread="${esc(node.id)}">
+                ${isExpanded ? `▾ Свернуть (${node.descCount})` : `▸ Развернуть (${node.descCount})`}
+              </button>
+            ` : ""}
+          </div>
+          ${inlineReplyHtml}
+        </div>
+        ${repliesHtml}
+      </div>
+    `;
+  }
+
   function renderCommentsSection(post) {
     const wrap = document.getElementById("view-comments-wrap");
     if (!wrap) return;
     const comments = Array.isArray(post.comments) ? post.comments : [];
+    const { roots } = buildCommentTree(comments);
 
-    const listHtml = comments.length
-      ? comments.map(c => {
-          const isCreatorComment = (c.author || "").toLowerCase() === "miralys";
-          const canDelComment = state.currentUser && (
-            state.currentUser.isCreator ||
-            state.currentUser.username.toLowerCase() === (c.author || "").toLowerCase()
-          );
-          return `
-            <div class="comment-item">
-              <div class="comment-head">
-                <div>
-                  <span class="comment-author">${esc(c.author)}</span>
-                  ${isCreatorComment ? `<span class="comment-creator-tag">Создатель</span>` : ""}
-                </div>
-                <div class="comment-meta-right">
-                  <span>${formatDateTime(c.createdAt)}</span>
-                  ${canDelComment ? `<button class="comment-del-btn" data-del-comment="${esc(c.id)}" title="Удалить коммент">✕</button>` : ""}
-                </div>
-              </div>
-              <div class="comment-body">${esc(c.text)}</div>
-            </div>
-          `;
-        }).join("")
+    const listHtml = roots.length
+      ? roots.map(r => renderCommentNode(r, 0)).join("")
       : `<div class="muted-note">Комментариев пока нет. Будь первым!</div>`;
 
     const formHtml = state.currentUser
@@ -1013,7 +1094,7 @@
       `
       : `
         <div class="comment-login-prompt">
-          <span>Хочешь оставить коммент? Войди в аккаунт!</span>
+          <span>Хочешь комментить или отвечать? Войди в аккаунт!</span>
           <button type="button" id="comment-login-btn" class="btn-secondary">Войти / Рега</button>
         </div>
       `;
@@ -1026,6 +1107,7 @@
       </div>
     `;
 
+    // Новый корневой коммент
     const cForm = document.getElementById("comment-form");
     if (cForm) {
       cForm.onsubmit = async (e) => {
@@ -1033,9 +1115,56 @@
         const input = document.getElementById("comment-input");
         const text = input.value.trim();
         if (!text) return;
-        await handleAddComment(post.id, text);
+        await handleAddComment(post.id, text, null, "");
       };
     }
+
+    // Кнопка "Ответить"
+    wrap.querySelectorAll("[data-reply-id]").forEach(btn => {
+      btn.onclick = () => {
+        if (!state.currentUser) {
+          closeModal("modal-view");
+          syncAuthModalFields();
+          openModal("modal-auth");
+          return;
+        }
+        const id = btn.dataset.replyId;
+        const author = btn.dataset.replyAuthor;
+        state.replyToComment = (state.replyToComment && state.replyToComment.id === id)
+          ? null
+          : { id, author };
+        renderCommentsSection(post);
+        if (state.replyToComment) {
+          const inp = document.getElementById("inline-reply-input");
+          if (inp) inp.focus();
+        }
+      };
+    });
+
+    // Форма ответа в ветке
+    const inlineForm = document.getElementById("inline-reply-form");
+    if (inlineForm && state.replyToComment) {
+      inlineForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const text = document.getElementById("inline-reply-input").value.trim();
+        if (!text) return;
+        await handleAddComment(post.id, text, state.replyToComment.id, state.replyToComment.author);
+      };
+      document.getElementById("inline-reply-cancel").onclick = () => {
+        state.replyToComment = null;
+        renderCommentsSection(post);
+      };
+    }
+
+    // Развернуть / Свернуть ветку
+    wrap.querySelectorAll("[data-toggle-thread]").forEach(btn => {
+      btn.onclick = () => {
+        const tid = btn.dataset.toggleThread;
+        const currentlyExpanded = btn.textContent.trim().startsWith("▾");
+        state.threadToggles[tid] = !currentlyExpanded;
+        renderCommentsSection(post);
+      };
+    });
 
     const cLoginBtn = document.getElementById("comment-login-btn");
     if (cLoginBtn) {
@@ -1051,9 +1180,23 @@
     });
   }
 
-  async function handleAddComment(postId, text) {
+  function expandAncestorsFor(comments, startParentId) {
+    const byId = new Map((comments || []).map(c => [c.id, c]));
+    let cur = startParentId;
+    const guard = new Set();
+    while (cur && !guard.has(cur)) {
+      guard.add(cur);
+      state.threadToggles[cur] = true;
+      const node = byId.get(cur);
+      cur = node ? node.parentId : null;
+    }
+  }
+
+  async function handleAddComment(postId, text, parentId = null, replyTo = "") {
     if (!ensureTokenInteractive()) return;
-    const btn = document.getElementById("comment-submit-btn");
+    const btn = parentId
+      ? document.getElementById("inline-reply-submit")
+      : document.getElementById("comment-submit-btn");
     if (btn) { btn.disabled = true; btn.textContent = "Отправляем..."; }
 
     const newComment = {
@@ -1062,6 +1205,10 @@
       text,
       createdAt: new Date().toISOString()
     };
+    if (parentId) {
+      newComment.parentId = parentId;
+      newComment.replyTo = replyTo;
+    }
 
     try {
       if (IS_GITHUB_READY) {
@@ -1078,29 +1225,58 @@
       }
 
       const freshPost = state.posts.find(p => p.id === postId);
-      if (freshPost) renderCommentsSection(freshPost);
+      state.replyToComment = null;
+      if (freshPost) {
+        if (parentId) expandAncestorsFor(freshPost.comments, parentId);
+        renderCommentsSection(freshPost);
+      }
       renderFeed();
     } catch (err) {
       alert("Не вышло отправить коммент: " + err.message);
-      if (btn) { btn.disabled = false; btn.textContent = "Отправить"; }
+      if (btn) { btn.disabled = false; btn.textContent = parentId ? "Отправить ответ" : "Отправить"; }
     }
   }
 
   async function handleDeleteComment(postId, commentId) {
-    if (!confirm("Удалить этот комментарий?")) return;
+    const post = state.posts.find(p => p.id === postId);
+    const list = post ? (post.comments || []) : [];
+
+    // Собираем сам коммент и всех его потомков
+    const toDelete = new Set([commentId]);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const c of list) {
+        if (c.parentId && toDelete.has(c.parentId) && !toDelete.has(c.id)) {
+          toDelete.add(c.id);
+          added = true;
+        }
+      }
+    }
+
+    const msg = toDelete.size > 1
+      ? `Удалить комментарий и все ответы в ветке (${toDelete.size - 1} шт.)?`
+      : "Удалить этот комментарий?";
+    if (!confirm(msg)) return;
     if (!ensureTokenInteractive()) return;
 
     try {
       if (IS_GITHUB_READY) {
         state.posts = await ghUpdateJson(
           "data/posts.json",
-          list => list.map(p => p.id === postId ? { ...p, comments: (p.comments || []).filter(c => c.id !== commentId) } : p),
+          postsArr => postsArr.map(p => p.id === postId
+            ? { ...p, comments: (p.comments || []).filter(c => !toDelete.has(c.id)) }
+            : p
+          ),
           `Delete comment on ${postId}`
         );
         const updated = state.posts.find(p => p.id === postId);
         if (updated) saveOptimisticPost(updated);
       } else {
-        state.posts = state.posts.map(p => p.id === postId ? { ...p, comments: (p.comments || []).filter(c => c.id !== commentId) } : p);
+        state.posts = state.posts.map(p => p.id === postId
+          ? { ...p, comments: (p.comments || []).filter(c => !toDelete.has(c.id)) }
+          : p
+        );
         localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(state.posts));
       }
 
@@ -1152,7 +1328,6 @@
         const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]").filter(p => p.id !== postId);
         localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(opt));
 
-        // Сносим все фотки альбома, основное видео и превьюшку
         const allMedia = [target?.mediaUrl, ...(target?.mediaUrls || []), target?.thumbUrl];
         const pathsToRemove = [...new Set(
           allMedia.filter(u => u && u.startsWith("./uploads/")).map(u => u.replace(/^\.\//, ""))
@@ -1603,6 +1778,7 @@
     if (id === "modal-view") {
       document.getElementById("view-modal-body").innerHTML = "";
       state.carouselMove = null;
+      state.replyToComment = null;
     }
     modal.classList.add("hidden");
   }
@@ -1712,7 +1888,6 @@
     document.getElementById("hero-publish-cta").addEventListener("click", openPublish);
     document.getElementById("pub-type").addEventListener("change", syncPublishFormFields);
 
-    // Обработка выбора нескольких фото (можно докидывать из разных папок)
     document.getElementById("pub-file").addEventListener("change", (e) => {
       if (document.getElementById("pub-type").value !== "photos") return;
       const picked = [...(e.target.files || [])];
