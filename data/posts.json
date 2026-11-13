@@ -62,7 +62,10 @@
         "text": "хахахвхвхв была",
         "createdAt": "2026-11-13T11:56:34.408Z",
         "parentId": "c-1794570527362-whh",
-        "replyTo": "Miralys"
+        "replyTo": "Miralys",
+        "likes": [
+          "Miralys"
+        ]
       }
     ],
     "mediaUrl": "./uploads/post-1794570323299-42ko.jpg"
