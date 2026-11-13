@@ -229,15 +229,48 @@
       body: JSON.stringify(body)
     });
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) {
-        clearUnlockedToken();
-      }
+      if (res.status === 401 || res.status === 403) clearUnlockedToken();
       const err = await res.json().catch(() => ({}));
       const e = new Error(err.message || `GitHub PUT ${res.status}`);
       e.status = res.status;
       throw e;
     }
     return res.json();
+  }
+
+  async function ghDeleteFile(path, commitMessage) {
+    const token = getUnlockedToken();
+    if (!token) throw new Error("Нет токена для удаления файла.");
+
+    const metaRes = await fetch(`${apiUrl(path)}?ref=${GH.branch || "main"}&t=${Date.now()}`, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json"
+      },
+      cache: "no-store"
+    });
+    if (metaRes.status === 404) return;
+    if (!metaRes.ok) throw new Error(`GitHub GET sha ${path}: ${metaRes.status}`);
+    const meta = await metaRes.json();
+
+    const delRes = await fetch(apiUrl(path), {
+      method: "DELETE",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        message: commitMessage,
+        sha: meta.sha,
+        branch: GH.branch || "main"
+      })
+    });
+    if (!delRes.ok) {
+      if (delRes.status === 401 || delRes.status === 403) clearUnlockedToken();
+      const err = await delRes.json().catch(() => ({}));
+      throw new Error(err.message || `GitHub DELETE ${delRes.status}`);
+    }
   }
 
   async function ghUpdateJson(path, mutator, commitMessage) {
@@ -263,13 +296,16 @@
     }
   }
 
-  async function compressImageIfNeeded(file) {
-    if (!file.type.startsWith("image/") || file.size < 900 * 1024) {
-      return new Uint8Array(await file.arrayBuffer());
+  // Автоконвертация всех фото в WebP (на iPhone фоллбек в JPG, GIF оставляем как есть)
+  async function processImageForUpload(file) {
+    if (file.type === "image/gif") {
+      return { bytes: new Uint8Array(await file.arrayBuffer()), ext: "gif", mime: "image/gif" };
     }
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
       const img = new Image();
       img.onload = () => {
+        URL.revokeObjectURL(url);
         const maxSide = 1600;
         let { width, height } = img;
         if (width > maxSide || height > maxSide) {
@@ -281,11 +317,22 @@
         canvas.width = width;
         canvas.height = height;
         canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+
+        const canWebp = canvas.toDataURL("image/webp").startsWith("data:image/webp");
+        const mime = canWebp ? "image/webp" : "image/jpeg";
+        const ext = canWebp ? "webp" : "jpg";
+        const quality = canWebp ? 0.82 : 0.85;
+
         canvas.toBlob(async (blob) => {
-          resolve(new Uint8Array(await blob.arrayBuffer()));
-        }, "image/jpeg", 0.85);
+          if (!blob) return reject(new Error("Не удалось конвертировать фото"));
+          resolve({ bytes: new Uint8Array(await blob.arrayBuffer()), ext, mime });
+        }, mime, quality);
       };
-      img.src = URL.createObjectURL(file);
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Браузер не смог прочитать картинку (если это HEIC с айфона — сделай скрин или выбери JPG)"));
+      };
+      img.src = url;
     });
   }
 
@@ -333,16 +380,16 @@
   function getFallbackSamplePosts() {
     return [
       {
-        id: "book-9th-grade",
+        id: "book-djan-2025",
         type: "books",
         featured: true,
-        title: "Хроника ушедшего после девятого",
-        bookAuthor: "Выпускники посёлка",
-        bookYear: "Том 1 (1 стр.)",
+        title: "Путь к успеху: от пожарного до кочегара (2 часть)",
+        bookAuthor: "Джан (Артур Боярский)",
+        bookYear: "2025 • 1 стр.",
         author: "Miralys",
-        createdAt: "2026-05-25T12:00:00Z",
-        text: "Говорят, после девятого класса есть другая жизнь — шараги, стипендия, первые пары к девяти утра.\n\nНаш герой ушёл туда смело, пообещав «не теряться» и «заходить на переменах». На следующий день он пропал с радаров, как сигнал МТС за околицей посёлка.\n\nЭта книга состоит ровно из одной страницы, потому что больше мы о нём за эти два года так и не узнали. Помним. Гордимся. Ждём на выпускной.",
-        tags: ["книга", "9-й класс", "лор"]
+        createdAt: "2025-10-05T12:00:00Z",
+        text: "История успеха из 2025 года.",
+        tags: ["книга", "Джан"]
       }
     ];
   }
@@ -565,17 +612,57 @@
   }
 
   async function deletePost(postId) {
-    if (!confirm("Точно выпилить эту запись из архива?")) return;
-    if (IS_GITHUB_READY) {
-      await ghUpdateJson("data/posts.json", list => list.filter(p => p.id !== postId), `Delete post ${postId}`);
-    } else {
-      const next = state.posts.filter(p => p.id !== postId);
-      localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(next));
+    if (!confirm("Точно выпилить эту запись (и её файлы) из архива?")) return;
+    const target = state.posts.find(p => p.id === postId);
+    const delBtn = document.getElementById("view-delete-btn");
+
+    if (IS_GITHUB_READY && CFG.ENCRYPTED_TOKEN && !getUnlockedToken()) {
+      const phrase = prompt("Напиши 0 (так надо, по-братски):");
+      if (phrase === null) return;
+      const tok = decryptToken(CFG.ENCRYPTED_TOKEN, phrase);
+      if (!tok) {
+        alert("Братик, там же написано: напиши 0!");
+        return;
+      }
+      saveUnlockedToken(tok);
     }
-    state.posts = state.posts.filter(p => p.id !== postId);
-    closeModal("modal-view");
-    updateCounts();
-    renderFeed();
+
+    if (delBtn) {
+      delBtn.disabled = true;
+      delBtn.textContent = "Удаляем...";
+    }
+
+    try {
+      if (IS_GITHUB_READY) {
+        await ghUpdateJson("data/posts.json", list => list.filter(p => p.id !== postId), `Delete post ${postId}`);
+
+        const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]").filter(p => p.id !== postId);
+        localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(opt));
+
+        if (target && target.mediaUrl && target.mediaUrl.startsWith("./uploads/")) {
+          const cleanPath = target.mediaUrl.replace(/^\.\//, "");
+          try {
+            await ghDeleteFile(cleanPath, `Delete media for ${postId}`);
+          } catch (err) {
+            console.warn("Не вышло снести файл из uploads:", err);
+          }
+        }
+      } else {
+        const next = state.posts.filter(p => p.id !== postId);
+        localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(next));
+      }
+
+      state.posts = state.posts.filter(p => p.id !== postId);
+      closeModal("modal-view");
+      updateCounts();
+      renderFeed();
+    } catch (err) {
+      alert("Не удалось удалить: " + err.message);
+      if (delBtn) {
+        delBtn.disabled = false;
+        delBtn.textContent = "Удалить из архива";
+      }
+    }
   }
 
   // ====== АВТОРИЗАЦИЯ И ШИЗА С MIRALYS ======
@@ -615,7 +702,6 @@
 
     if (!usernameRaw || !password) return showErr("Заполни имя и пароль.");
 
-    // ГЛАВНЫЙ ПРИКОЛ С АККАУНТОМ MIRALYS
     if (lower === "miralys") {
       if (state.authMode === "register" || !isDevMode()) {
         return showErr("Аккаунт не зарегистрирован");
@@ -645,7 +731,6 @@
       return;
     }
 
-    // РЕГИСТРАЦИЯ (БЕЗ ЛИМИТА)
     if (state.users.some(u => u.username.toLowerCase() === lower)) {
       return showErr("Такой ник уже занят!");
     }
@@ -696,7 +781,7 @@
     const fileInput = document.getElementById("pub-file");
     if (type === "photos") {
       fileInput.accept = "image/*";
-      document.getElementById("pub-file-label").textContent = "Загрузить фото (сожмётся автоматически)";
+      document.getElementById("pub-file-label").textContent = "Загрузить фото (автоматом сожмётся в WebP)";
     } else if (type === "video") {
       fileInput.accept = "video/*";
       document.getElementById("pub-file-label").textContent = "Загрузить видеофайл (до 25 МБ)";
@@ -765,17 +850,23 @@
         if (file.size > (CFG.MAX_UPLOAD_MB || 25) * 1024 * 1024 && type === "video") {
           throw new Error(`Файл больше ${CFG.MAX_UPLOAD_MB || 25} МБ. Залей на YouTube и вставь ссылку!`);
         }
-        statusBox.textContent = "Обработка и загрузка файла...";
+        statusBox.textContent = type === "photos" ? "Конвертируем в WebP и грузим..." : "Загружаем видео...";
         statusBox.classList.remove("hidden");
 
-        const bytes = type === "photos"
-          ? await compressImageIfNeeded(file)
-          : new Uint8Array(await file.arrayBuffer());
+        let bytes, ext, mime;
+        if (type === "photos") {
+          const processed = await processImageForUpload(file);
+          bytes = processed.bytes;
+          ext = processed.ext;
+          mime = processed.mime;
+        } else {
+          bytes = new Uint8Array(await file.arrayBuffer());
+          ext = (file.name.split(".").pop() || "mp4").toLowerCase().replace(/[^a-z0-9]/g, "");
+          mime = file.type || "video/mp4";
+        }
 
-        const ext = (file.name.split(".").pop() || (type === "photos" ? "jpg" : "mp4")).toLowerCase().replace(/[^a-z0-9]/g, "");
         const filePath = `uploads/${postId}.${ext}`;
-
-        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: file.type || "application/octet-stream" }));
+        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
         state.sessionMedia[postId] = blobUrl;
 
         if (IS_GITHUB_READY) {
@@ -783,7 +874,7 @@
           mediaUrl = `./${filePath}`;
         } else {
           mediaUrl = bytes.length < 2 * 1024 * 1024
-            ? `data:${file.type || "image/jpeg"};base64,${bytesToBase64(bytes)}`
+            ? `data:${mime};base64,${bytesToBase64(bytes)}`
             : blobUrl;
         }
       }
