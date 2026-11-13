@@ -25,7 +25,9 @@
         "id": "c-1794576434118-0hh",
         "author": "Викси",
         "text": "как у Галюхи",
-        "likes": [],
+        "likes": [
+          "Miralys"
+        ],
         "createdAt": "2026-11-13T13:27:14.118Z",
         "parentId": "c-1794576381619-fnf",
         "replyTo": "Miralys"
