@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DebinArchive: Цифровой архив локальных приколов 11-го класса</title>
+  <title>DebinArchive: Цифровой архив посёлка</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -70,7 +70,7 @@
       </div>
     </nav>
 
-    <!-- Вторичная полоса подменю (ia-topnav-desktop-subnav) -->
+    <!-- Вторичная полоса подменю -->
     <div id="subnav-bar" class="desktop-subnav">
       <ul id="subnav-tabs">
         <li><button class="subnav-link active" data-tab="all">Главная</button></li>
@@ -79,16 +79,16 @@
         <li><button class="subnav-link" data-tab="video">Видео</button></li>
         <li><button class="subnav-link" data-tab="books">Книги</button></li>
         <li><button class="subnav-link" data-tab="photos">Фото</button></li>
-        <li><button class="subnav-link" id="subnav-users-link">Участники (5+1)</button></li>
+        <li><button class="subnav-link" id="subnav-users-link">Участники</button></li>
       </ul>
     </div>
   </header>
 
-  <!-- Серая полоса поиска в стиле Wayback (#666) -->
+  <!-- Серая полоса поиска в стиле Wayback -->
   <section class="wayback-strip">
     <div class="wayback-inner">
       <div class="wayback-tagline">
-        <strong>DEBIN WAYBACK:</strong> локальный архив посёлка • 11 класс • выживших 5/5
+        <strong>DEBIN WAYBACK:</strong> локальный архив посёлка и выпускников
       </div>
       <form id="search-form" class="wayback-search-form">
         <input type="text" id="search-input" placeholder="Искать мемы, цитаты, фотки, книгу про 9-й класс..." autocomplete="off">
@@ -98,7 +98,7 @@
     </div>
   </section>
 
-  <!-- Основной контейнер (#page-container) -->
+  <!-- Основной контейнер -->
   <main id="page-container">
     <!-- Белый Hero-блок -->
     <section class="hero-block">
@@ -114,7 +114,7 @@
 
         <div class="hero-center">
           <h1 class="whoweare">
-            <strong>DebinArchive</strong> — уютный некоммерческий архив приколов, мыслей, цитат и легендарных фоток наших 5 человек.
+            <strong>DebinArchive</strong> — уютный некоммерческий архив локальных приколов, мыслей, цитат и легендарных фоток.
           </h1>
 
           <div id="hero-icon-bar" class="hero-icon-bar">
@@ -168,7 +168,7 @@
       </div>
     </section>
 
-    <!-- Сетка ленты (infinite-scroller) -->
+    <!-- Сетка ленты -->
     <section class="feed-section">
       <div class="feed-header">
         <h2 id="feed-title">Весь архив</h2>
@@ -183,9 +183,9 @@
     </section>
   </main>
 
-  <!-- Футер (app-footer) -->
+  <!-- Футер -->
   <footer class="app-footer">
-    DebinArchive • Сделано на коленке для 5 выпускников посёлка • Создатель: Miralys • Без рекламы и регистрации (почти)
+    DebinArchive • Архив локальных приколов посёлка • Создатель: Miralys
   </footer>
 
   <!-- МОДАЛКА: ВХОД / РЕГИСТРАЦИЯ -->
@@ -215,8 +215,8 @@
             <input type="password" id="auth-password" required placeholder="••••••••">
           </label>
           <label id="auth-passphrase-wrap" class="hidden">
-            Кодовое слово класса (нужно один раз для ключа GitHub)
-            <input type="password" id="auth-passphrase" placeholder="Наш локальный пароль...">
+            Напиши 0 (так надо, по-братски)
+            <input type="text" id="auth-passphrase" placeholder="0" autocomplete="off">
           </label>
 
           <div id="auth-error" class="form-error hidden"></div>
@@ -262,7 +262,7 @@
             <div class="form-row-2">
               <label>
                 Автор летописи
-                <input type="text" id="pub-book-author" placeholder="Летописец 11-А">
+                <input type="text" id="pub-book-author" placeholder="Летописец">
               </label>
               <label>
                 Эпоха / год
@@ -296,8 +296,8 @@
           </label>
 
           <label id="pub-passphrase-group" class="hidden">
-            Кодовое слово класса (для авто-пуша на GitHub, 1 раз)
-            <input type="password" id="pub-passphrase" placeholder="Введи секретное слово...">
+            Напиши 0 (так надо, по-братски)
+            <input type="text" id="pub-passphrase" placeholder="0" autocomplete="off">
           </label>
 
           <div id="pub-status" class="form-status hidden"></div>
@@ -327,11 +327,11 @@
         <button class="modal-close" data-close="modal-users">✕</button>
       </div>
       <div class="modal-body">
-        <p class="muted-note">Жители посёлка, дошедшие до финала (11 класс, 5 человек + дух Создателя).</p>
+        <p class="muted-note">Зарегистрированные жители посёлка и участники архива.</p>
         <div id="users-list" class="users-list"></div>
 
         <div id="invite-box" class="invite-box hidden">
-          <div class="muted-note">Ключ GitHub в этом браузере уже разблокирован.</div>
+          <div class="muted-note">Доступ к публикациям уже активирован.</div>
           <button id="copy-invite-btn" class="btn-secondary full-btn">Скопировать инвайт-ссылку для кентов</button>
         </div>
       </div>

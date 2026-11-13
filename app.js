@@ -33,10 +33,10 @@
     searchQuery: "",
     authMode: "login",
     currentUser: null,
-    sessionMedia: {} // временные превью только что загруженных картинок/видео
+    sessionMedia: {}
   };
 
-  // ====== КРИПТОГРАФИЯ (ЧИСТЫЙ SHA-256, РАБОТАЕТ ВЕЗДЕ ДАЖЕ НА file://) ======
+  // ====== КРИПТОГРАФИЯ (ЧИСТЫЙ SHA-256) ======
   const K = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -165,7 +165,22 @@
     return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
   }
 
+  function saveUnlockedToken(tok) {
+    localStorage.setItem(LS_TOKEN, tok);
+    localStorage.setItem(LS_TOKEN + "_sig", (CFG.ENCRYPTED_TOKEN || "").slice(0, 16));
+  }
+
+  function clearUnlockedToken() {
+    localStorage.removeItem(LS_TOKEN);
+    localStorage.removeItem(LS_TOKEN + "_sig");
+  }
+
   function getUnlockedToken() {
+    const sig = localStorage.getItem(LS_TOKEN + "_sig");
+    if (!CFG.ENCRYPTED_TOKEN || sig !== CFG.ENCRYPTED_TOKEN.slice(0, 16)) {
+      clearUnlockedToken();
+      return "";
+    }
     return localStorage.getItem(LS_TOKEN) || "";
   }
 
@@ -196,7 +211,7 @@
 
   async function ghPutRaw(path, base64Content, message, sha = null) {
     const token = getUnlockedToken();
-    if (!token) throw new Error("Не введено кодовое слово класса для доступа к GitHub.");
+    if (!token) throw new Error("Не введён братский 0 для доступа к архиву.");
     const body = {
       message,
       content: base64Content,
@@ -214,6 +229,9 @@
       body: JSON.stringify(body)
     });
     if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        clearUnlockedToken();
+      }
       const err = await res.json().catch(() => ({}));
       const e = new Error(err.message || `GitHub PUT ${res.status}`);
       e.status = res.status;
@@ -239,13 +257,12 @@
         await ghPutRaw(path, b64, commitMessage, sha);
         return next;
       } catch (e) {
-        if (e.status === 409 && attempt === 0) continue; // кто-то пушнул в ту же секунду -> ретрай
+        if (e.status === 409 && attempt === 0) continue;
         throw e;
       }
     }
   }
 
-  // Сжатие фото через canvas, чтобы не засирать репо 10МБ фотками
   async function compressImageIfNeeded(file) {
     if (!file.type.startsWith("image/") || file.size < 900 * 1024) {
       return new Uint8Array(await file.arrayBuffer());
@@ -278,9 +295,11 @@
     let users = [];
 
     if (IS_GITHUB_READY) {
-      // Сначала пробуем напрямую через API (без кэша GitHub Pages), потом фоллбек на локальный JSON
       try {
-        const [pRes, uRes] = await Promise.all([ghGetFile("data/posts.json"), ghGetFile("data/users.json")]);
+        const [pRes, uRes] = await Promise.all([
+          ghGetFile("data/posts.json"),
+          ghGetFile("data/users.json").catch(() => ({ data: [] }))
+        ]);
         posts = pRes.data;
         users = uRes.data;
       } catch {
@@ -292,14 +311,12 @@
         users = uLoc;
       }
 
-      // Оптимистичный кэш свежих постов на 2 минуты, пока CDN гитхаба просыпается
       const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]")
         .filter(item => Date.now() - item._ts < 120000);
       localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(opt));
       const ids = new Set(posts.map(p => p.id));
       opt.forEach(item => { if (!ids.has(item.id)) posts.unshift(item); });
     } else {
-      // Демо-режим (если config.js ещё не заполнен или открыли локально)
       try {
         const filePosts = await fetch("./data/posts.json").then(r => r.json());
         posts = JSON.parse(localStorage.getItem(LS_LOCAL_POSTS) || "null") || filePosts;
@@ -320,7 +337,7 @@
         type: "books",
         featured: true,
         title: "Хроника ушедшего после девятого",
-        bookAuthor: "Выжившие 11-А",
+        bookAuthor: "Выпускники посёлка",
         bookYear: "Том 1 (1 стр.)",
         author: "Miralys",
         createdAt: "2026-05-25T12:00:00Z",
@@ -344,9 +361,9 @@
     const regCount = state.users.length;
     ann.innerHTML = `
       <li>Всего записей в архиве: <strong>${total}</strong></li>
-      <li>Зарегано одноклассников: <strong>${regCount}</strong> / ${CFG.MAX_REGULAR_USERS || 5} (+ Создатель)</li>
+      <li>Участников в системе: <strong>${regCount}</strong> (+ Создатель)</li>
       <li>Главная реликвия: книга на 1 стр. в разделе <strong>«Книги»</strong></li>
-      <li>${IS_GITHUB_READY ? "Режим: <strong>GitHub Pages Live</strong>" : "Режим: <strong>Локальное превью</strong>"}</li>
+      <li>Вечное хранилище локального лора</li>
     `;
   }
 
@@ -601,10 +618,8 @@
     // ГЛАВНЫЙ ПРИКОЛ С АККАУНТОМ MIRALYS
     if (lower === "miralys") {
       if (state.authMode === "register" || !isDevMode()) {
-        // И при попытке зарегаться на Miralys/miralys, и при обычном входе без ?dev!
         return showErr("Аккаунт не зарегистрирован");
       }
-      // Вход Создателя через ?dev:
       if (CFG.CREATOR_PASS_HASH) {
         const hash = sha256Hex("DEBIN_CREATOR:" + password);
         if (hash !== CFG.CREATOR_PASS_HASH) return showErr("Неверный ключ Создателя.");
@@ -630,18 +645,15 @@
       return;
     }
 
-    // РЕГИСТРАЦИЯ ОБЫЧНОГО ОДНОКЛАССНИКА
-    if (CFG.MAX_REGULAR_USERS && state.users.length >= CFG.MAX_REGULAR_USERS) {
-      return showErr(`Все ${CFG.MAX_REGULAR_USERS} мест одноклассников уже заняты!`);
-    }
+    // РЕГИСТРАЦИЯ (БЕЗ ЛИМИТА)
     if (state.users.some(u => u.username.toLowerCase() === lower)) {
-      return showErr("Такой ник уже занят кем-то из ваших.");
+      return showErr("Такой ник уже занят!");
     }
 
     if (IS_GITHUB_READY && CFG.ENCRYPTED_TOKEN && !getUnlockedToken()) {
       const tok = decryptToken(CFG.ENCRYPTED_TOKEN, passphrase);
-      if (!tok) return showErr("Неверное кодовое слово класса!");
-      localStorage.setItem(LS_TOKEN, tok);
+      if (!tok) return showErr("Братик, там же написано: напиши 0!");
+      saveUnlockedToken(tok);
     }
 
     const newUser = {
@@ -652,7 +664,7 @@
 
     const btn = document.getElementById("auth-submit-btn");
     btn.disabled = true;
-    btn.textContent = "Сохраняем на GitHub...";
+    btn.textContent = "Регистрируем...";
     try {
       if (IS_GITHUB_READY) {
         state.users = await ghUpdateJson("data/users.json", list => [...list, newUser], `Register user ${usernameRaw}`);
@@ -687,7 +699,7 @@
       document.getElementById("pub-file-label").textContent = "Загрузить фото (сожмётся автоматически)";
     } else if (type === "video") {
       fileInput.accept = "video/*";
-      document.getElementById("pub-file-label").textContent = `Загрузить видеофайл (до ${CFG.MAX_UPLOAD_MB || 25} МБ)`;
+      document.getElementById("pub-file-label").textContent = "Загрузить видеофайл (до 25 МБ)";
     }
 
     const textLabels = {
@@ -722,8 +734,8 @@
     if (IS_GITHUB_READY && CFG.ENCRYPTED_TOKEN && !getUnlockedToken()) {
       const phrase = document.getElementById("pub-passphrase").value.trim();
       const tok = decryptToken(CFG.ENCRYPTED_TOKEN, phrase);
-      if (!tok) return showErr("Неверное кодовое слово класса!");
-      localStorage.setItem(LS_TOKEN, tok);
+      if (!tok) return showErr("Братик, там же написано: напиши 0!");
+      saveUnlockedToken(tok);
     }
 
     const type = document.getElementById("pub-type").value;
@@ -763,7 +775,6 @@
         const ext = (file.name.split(".").pop() || (type === "photos" ? "jpg" : "mp4")).toLowerCase().replace(/[^a-z0-9]/g, "");
         const filePath = `uploads/${postId}.${ext}`;
 
-        // Сохраняем локальное превью в памяти, чтобы автор видел файл сразу
         const blobUrl = URL.createObjectURL(new Blob([bytes], { type: file.type || "application/octet-stream" }));
         state.sessionMedia[postId] = blobUrl;
 
@@ -771,7 +782,6 @@
           await ghPutRaw(filePath, bytesToBase64(bytes), `Upload media ${postId}`);
           mediaUrl = `./${filePath}`;
         } else {
-          // В локальном демо-режиме сохраняем DataURL (для мелких картинок)
           mediaUrl = bytes.length < 2 * 1024 * 1024
             ? `data:${file.type || "image/jpeg"};base64,${bytesToBase64(bytes)}`
             : blobUrl;
@@ -815,6 +825,7 @@
       closeModal("modal-publish");
     } catch (err) {
       showErr("Не вышло запушить: " + err.message);
+      syncPublishFormFields();
     } finally {
       btn.disabled = false;
     }
@@ -829,7 +840,6 @@
       postCountBy[k] = (postCountBy[k] || 0) + 1;
     });
 
-    // Мистический Miralys всегда первым, независимо от users.json!
     let html = `
       <div class="user-row creator-row">
         <div>
@@ -848,7 +858,7 @@
             <strong>${esc(u.username)}</strong>
             <div class="muted-note" style="margin:0;">Постов: ${cnt} • С нами с ${formatDate(u.createdAt)}</div>
           </div>
-          <span class="badge-member">Выживший</span>
+          <span class="badge-member">Участник</span>
         </div>
       `;
     });
@@ -878,7 +888,7 @@
       const phrase = decodeURIComponent(m[1]);
       const tok = decryptToken(CFG.ENCRYPTED_TOKEN, phrase);
       if (tok) {
-        localStorage.setItem(LS_TOKEN, tok);
+        saveUnlockedToken(tok);
         history.replaceState(null, "", window.location.pathname + window.location.search);
       }
     }
@@ -897,7 +907,6 @@
     updateCounts();
     renderFeed();
 
-    // Навигация и табы
     document.querySelectorAll("[data-tab]").forEach(btn => {
       btn.addEventListener("click", () => {
         setTab(btn.dataset.tab);
@@ -909,7 +918,6 @@
       document.querySelector(".media-menu").classList.toggle("open");
     });
 
-    // Поиск
     const searchInput = document.getElementById("search-input");
     const clearBtn = document.getElementById("search-clear-btn");
     document.getElementById("search-form").addEventListener("submit", (e) => {
@@ -929,13 +937,11 @@
       renderFeed();
     });
 
-    // Клик по карточкам
     document.getElementById("feed-grid").addEventListener("click", (e) => {
       const card = e.target.closest(".tile");
       if (card) openPostModal(card.dataset.postId);
     });
 
-    // Кнопка входа / выхода
     document.getElementById("nav-auth-btn").addEventListener("click", () => {
       if (state.currentUser) {
         if (confirm(`Выйти из аккаунта ${state.currentUser.username}?`)) {
@@ -949,7 +955,6 @@
       }
     });
 
-    // Вкладки вход / регистрация
     document.querySelectorAll("[data-auth-mode]").forEach(btn => {
       btn.addEventListener("click", () => {
         state.authMode = btn.dataset.authMode;
@@ -960,7 +965,6 @@
 
     document.getElementById("auth-form").addEventListener("submit", handleAuthSubmit);
 
-    // Публикация
     const openPublish = () => {
       if (!state.currentUser) {
         syncAuthModalFields();
@@ -975,20 +979,17 @@
     document.getElementById("pub-type").addEventListener("change", syncPublishFormFields);
     document.getElementById("publish-form").addEventListener("submit", handlePublishSubmit);
 
-    // Участники
     document.getElementById("nav-users-btn").addEventListener("click", openUsersModal);
     document.getElementById("subnav-users-link").addEventListener("click", openUsersModal);
 
-    // Инвайт-ссылка (копирует ссылку с хешем)
     document.getElementById("copy-invite-btn").addEventListener("click", () => {
-      const phrase = prompt("Введи кодовое слово класса, чтобы зашить его в одноразовую ссылку-приглашение:");
+      const phrase = prompt("Введи 0 (или своё слово), чтобы зашить его в одноразовую инвайт-ссылку:");
       if (!phrase) return;
       const link = `${window.location.origin}${window.location.pathname}#key=${encodeURIComponent(phrase)}`;
       navigator.clipboard?.writeText(link);
-      alert("Ссылка скопирована! Кидай её в беседу вашим:\n" + link);
+      alert("Ссылка скопирована! Кидай её в беседу:\n" + link);
     });
 
-    // Закрытие модалок
     document.querySelectorAll("[data-close]").forEach(btn => {
       btn.addEventListener("click", () => closeModal(btn.dataset.close));
     });
