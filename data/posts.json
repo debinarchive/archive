@@ -1,5 +1,28 @@
 [
   {
+    "id": "post-1794570162165-y56x",
+    "type": "photos",
+    "title": "супермегакрутые фотки",
+    "text": "кое какой человек своровал у меня телефон и нафотал эти шедевры",
+    "author": "Викси",
+    "createdAt": "2026-11-13T11:43:03.244Z",
+    "tags": [],
+    "comments": [],
+    "mediaUrl": "./uploads/post-1794570162165-y56x_0.jpg",
+    "mediaUrls": [
+      "./uploads/post-1794570162165-y56x_0.jpg",
+      "./uploads/post-1794570162165-y56x_1.jpg",
+      "./uploads/post-1794570162165-y56x_2.jpg",
+      "./uploads/post-1794570162165-y56x_3.jpg",
+      "./uploads/post-1794570162165-y56x_4.jpg",
+      "./uploads/post-1794570162165-y56x_5.jpg",
+      "./uploads/post-1794570162165-y56x_6.jpg",
+      "./uploads/post-1794570162165-y56x_7.jpg",
+      "./uploads/post-1794570162165-y56x_8.jpg",
+      "./uploads/post-1794570162165-y56x_9.jpg"
+    ]
+  },
+  {
     "id": "post-1794567484714-6jf6",
     "type": "photos",
     "title": "без бровей",
