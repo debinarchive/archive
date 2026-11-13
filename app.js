@@ -1,7 +1,9 @@
 (() => {
   const CFG = window.DEBIN_CONFIG || {};
   const GH = CFG.GITHUB || {};
+  const CLD = CFG.CLOUDINARY || {};
   const IS_GITHUB_READY = Boolean(GH.owner && GH.owner !== "YOUR_GITHUB_USERNAME" && GH.repo);
+  const HAS_CLOUDINARY = Boolean(CLD.cloudName && CLD.uploadPreset);
 
   const LS_TOKEN = "debin_gh_token";
   const LS_SESSION = "debin_user_session";
@@ -33,7 +35,9 @@
     searchQuery: "",
     authMode: "login",
     currentUser: null,
-    sessionMedia: {}
+    sessionMedia: {},
+    selectedPhotoFiles: [],
+    carouselMove: null
   };
 
   // ====== КРИПТОГРАФИЯ (ЧИСТЫЙ SHA-256) ======
@@ -111,6 +115,19 @@
     return btoa(bin);
   }
 
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = String(reader.result || "");
+        const idx = res.indexOf(",");
+        resolve(idx >= 0 ? res.slice(idx + 1) : res);
+      };
+      reader.onerror = () => reject(new Error("Не удалось прочитать файл с устройства"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
   function base64ToBytes(b64) {
     const bin = atob(b64.replace(/\s+/g, ""));
     const bytes = new Uint8Array(bin.length);
@@ -165,6 +182,13 @@
     return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
   }
 
+  function formatDateTime(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  }
+
   function saveUnlockedToken(tok) {
     localStorage.setItem(LS_TOKEN, tok);
     localStorage.setItem(LS_TOKEN + "_sig", (CFG.ENCRYPTED_TOKEN || "").slice(0, 16));
@@ -190,9 +214,137 @@
     return m ? m[1] : null;
   }
 
-  // ====== GITHUB REST API ======
+  function setProgress(pct, label) {
+    const wrap = document.getElementById("pub-progress-wrap");
+    const bar = document.getElementById("pub-progress-bar");
+    const txt = document.getElementById("pub-progress-text");
+    if (!wrap) return;
+    wrap.classList.remove("hidden");
+    bar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    txt.textContent = label || `${pct}%`;
+  }
+
+  function hideProgress() {
+    const wrap = document.getElementById("pub-progress-wrap");
+    if (wrap) wrap.classList.add("hidden");
+  }
+
+  function ensureTokenInteractive() {
+    if (!IS_GITHUB_READY || !CFG.ENCRYPTED_TOKEN || getUnlockedToken()) return true;
+    const phrase = prompt("Напиши 0 (так надо, по-братски):");
+    if (phrase === null) return false;
+    const tok = decryptToken(CFG.ENCRYPTED_TOKEN, phrase);
+    if (!tok) {
+      alert("Братик, там же написано: напиши 0!");
+      return false;
+    }
+    saveUnlockedToken(tok);
+    return true;
+  }
+
+  // ====== МУЛЬТИ-ФОТО ПРЕВЬЮ В ФОРМЕ ======
+  function ensurePhotoPreviewBox() {
+    let box = document.getElementById("pub-files-preview");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "pub-files-preview";
+      box.className = "pub-files-preview hidden";
+      document.getElementById("pub-file-group").appendChild(box);
+    }
+    return box;
+  }
+
+  function renderSelectedPhotosPreview() {
+    const box = ensurePhotoPreviewBox();
+    const type = document.getElementById("pub-type").value;
+    if (type !== "photos" || !state.selectedPhotoFiles.length) {
+      box.classList.add("hidden");
+      box.innerHTML = "";
+      return;
+    }
+
+    box.classList.remove("hidden");
+    box.innerHTML = `
+      <div class="pub-files-head">
+        <span>Выбрано фото: <strong>${state.selectedPhotoFiles.length} шт.</strong> (можно ещё докинуть)</span>
+        <button type="button" id="pub-files-clear" class="pub-files-clear">Очистить всё</button>
+      </div>
+      <div class="pub-files-grid">
+        ${state.selectedPhotoFiles.map((f, idx) => `
+          <div class="pub-mini-thumb">
+            <img src="${esc(f._previewUrl)}" alt="">
+            <button type="button" class="pub-mini-remove" data-rm-photo="${idx}" title="Убрать">✕</button>
+          </div>
+        `).join("")}
+      </div>
+    `;
+
+    document.getElementById("pub-files-clear").onclick = () => {
+      clearSelectedPhotos();
+    };
+    box.querySelectorAll("[data-rm-photo]").forEach(btn => {
+      btn.onclick = () => {
+        const idx = Number(btn.dataset.rmPhoto);
+        const removed = state.selectedPhotoFiles.splice(idx, 1)[0];
+        if (removed && removed._previewUrl) URL.revokeObjectURL(removed._previewUrl);
+        renderSelectedPhotosPreview();
+      };
+    });
+  }
+
+  function clearSelectedPhotos() {
+    state.selectedPhotoFiles.forEach(f => {
+      if (f._previewUrl) URL.revokeObjectURL(f._previewUrl);
+    });
+    state.selectedPhotoFiles = [];
+    const fileInput = document.getElementById("pub-file");
+    if (fileInput) fileInput.value = "";
+    renderSelectedPhotosPreview();
+  }
+
+  // ====== GITHUB & XHR ЗАГРУЗЧИК ======
   function apiUrl(path) {
     return `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/${path}`;
+  }
+
+  function ghBaseUrl() {
+    return `https://api.github.com/repos/${GH.owner}/${GH.repo}`;
+  }
+
+  function xhrRequest(method, url, headers, body, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open(method, url, true);
+      xhr.timeout = 240000;
+      Object.entries(headers || {}).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+
+      if (onProgress && xhr.upload) {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            onProgress(Math.round((e.loaded / e.total) * 100), e.loaded, e.total);
+          }
+        };
+      }
+
+      xhr.onload = () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText || "{}"); } catch {}
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data);
+        } else {
+          if (url.includes("api.github.com") && (xhr.status === 401 || xhr.status === 403)) {
+            clearUnlockedToken();
+          }
+          const err = new Error(data.message || `HTTP ${xhr.status}`);
+          err.status = xhr.status;
+          reject(err);
+        }
+      };
+
+      xhr.onerror = () => reject(new Error("Обрыв сети при отправке файла"));
+      xhr.ontimeout = () => reject(new Error("Таймаут загрузки (файл тяжёлый для текущего интернета)"));
+      xhr.send(body);
+    });
   }
 
   async function ghGetFile(path) {
@@ -209,33 +361,105 @@
     return { sha: json.sha, data: JSON.parse(content) };
   }
 
-  async function ghPutRaw(path, base64Content, message, sha = null) {
+  async function ghPutRaw(path, base64Content, message, sha = null, onProgress = null) {
     const token = getUnlockedToken();
     if (!token) throw new Error("Не введён братский 0 для доступа к архиву.");
-    const body = {
-      message,
-      content: base64Content,
-      branch: GH.branch || "main"
-    };
+    const body = { message, content: base64Content, branch: GH.branch || "main" };
     if (sha) body.sha = sha;
 
-    const res = await fetch(apiUrl(path), {
-      method: "PUT",
-      headers: {
+    return xhrRequest(
+      "PUT",
+      apiUrl(path),
+      {
         "Authorization": `Bearer ${token}`,
         "Accept": "application/vnd.github+json",
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(body)
-    });
-    if (!res.ok) {
-      if (res.status === 401 || res.status === 403) clearUnlockedToken();
-      const err = await res.json().catch(() => ({}));
-      const e = new Error(err.message || `GitHub PUT ${res.status}`);
-      e.status = res.status;
-      throw e;
+      JSON.stringify(body),
+      onProgress
+    );
+  }
+
+  async function ghUploadViaGitBlobs(filesToUpload, commitMessage, onProgress) {
+    const token = getUnlockedToken();
+    if (!token) throw new Error("Не введён братский 0 для доступа к архиву.");
+    const branch = GH.branch || "main";
+    const headers = {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "Content-Type": "application/json"
+    };
+
+    const totalLen = filesToUpload.reduce((s, f) => s + f.base64.length, 0) || 1;
+    let doneLen = 0;
+    const uploadedBlobs = [];
+
+    for (let i = 0; i < filesToUpload.length; i++) {
+      const f = filesToUpload[i];
+      const blobRes = await xhrRequest(
+        "POST",
+        `${ghBaseUrl()}/git/blobs`,
+        headers,
+        JSON.stringify({ content: f.base64, encoding: "base64" }),
+        onProgress ? (pct, loaded, total) => {
+          const overall = Math.round(((doneLen + (f.base64.length * pct / 100)) / totalLen) * 100);
+          onProgress(overall, loaded, total, i + 1, filesToUpload.length);
+        } : null
+      );
+      doneLen += f.base64.length;
+      uploadedBlobs.push({ path: f.path, mode: "100644", type: "blob", sha: blobRes.sha });
     }
-    return res.json();
+
+    setProgress(96, "Фиксируем файлы в ветке GitHub...");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const refRes = await fetch(`${ghBaseUrl()}/git/ref/heads/${branch}?t=${Date.now()}`, { headers, cache: "no-store" });
+      if (!refRes.ok) throw new Error(`Git ref error: ${refRes.status}`);
+      const refData = await refRes.json();
+      const headSha = refData.object.sha;
+
+      const commitRes = await fetch(`${ghBaseUrl()}/git/commits/${headSha}`, { headers, cache: "no-store" });
+      if (!commitRes.ok) throw new Error(`Git commit error: ${commitRes.status}`);
+      const commitData = await commitRes.json();
+
+      const treeData = await xhrRequest(
+        "POST",
+        `${ghBaseUrl()}/git/trees`,
+        headers,
+        JSON.stringify({ base_tree: commitData.tree.sha, tree: uploadedBlobs })
+      );
+
+      const newCommit = await xhrRequest(
+        "POST",
+        `${ghBaseUrl()}/git/commits`,
+        headers,
+        JSON.stringify({ message: commitMessage, tree: treeData.sha, parents: [headSha] })
+      );
+
+      try {
+        await xhrRequest(
+          "PATCH",
+          `${ghBaseUrl()}/git/refs/heads/${branch}`,
+          headers,
+          JSON.stringify({ sha: newCommit.sha, force: false })
+        );
+        return;
+      } catch (e) {
+        if ((e.status === 409 || e.status === 422) && attempt < 2) continue;
+        throw e;
+      }
+    }
+  }
+
+  async function uploadVideoToCloudinary(file, onProgress) {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("upload_preset", CLD.uploadPreset);
+    const url = `https://api.cloudinary.com/v1_1/${CLD.cloudName}/video/upload`;
+    const data = await xhrRequest("POST", url, {}, fd, onProgress);
+    return {
+      videoUrl: data.secure_url,
+      thumbUrl: data.secure_url.replace(/\.[^.\/]+$/, ".jpg")
+    };
   }
 
   async function ghDeleteFile(path, commitMessage) {
@@ -243,10 +467,7 @@
     if (!token) throw new Error("Нет токена для удаления файла.");
 
     const metaRes = await fetch(`${apiUrl(path)}?ref=${GH.branch || "main"}&t=${Date.now()}`, {
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Accept": "application/vnd.github+json"
-      },
+      headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json" },
       cache: "no-store"
     });
     if (metaRes.status === 404) return;
@@ -260,11 +481,7 @@
         "Accept": "application/vnd.github+json",
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        message: commitMessage,
-        sha: meta.sha,
-        branch: GH.branch || "main"
-      })
+      body: JSON.stringify({ message: commitMessage, sha: meta.sha, branch: GH.branch || "main" })
     });
     if (!delRes.ok) {
       if (delRes.status === 401 || delRes.status === 403) clearUnlockedToken();
@@ -274,7 +491,7 @@
   }
 
   async function ghUpdateJson(path, mutator, commitMessage) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       let sha = null;
       let current = [];
       try {
@@ -290,16 +507,16 @@
         await ghPutRaw(path, b64, commitMessage, sha);
         return next;
       } catch (e) {
-        if (e.status === 409 && attempt === 0) continue;
+        if (e.status === 409 && attempt < 2) continue;
         throw e;
       }
     }
   }
 
-  // Автоконвертация всех фото в WebP (на iPhone фоллбек в JPG, GIF оставляем как есть)
+  // Фото -> WebP (на iPhone фоллбек в JPG, GIF оставляем живым)
   async function processImageForUpload(file) {
     if (file.type === "image/gif") {
-      return { bytes: new Uint8Array(await file.arrayBuffer()), ext: "gif", mime: "image/gif" };
+      return { blob: file, ext: "gif", mime: "image/gif" };
     }
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
@@ -321,18 +538,71 @@
         const canWebp = canvas.toDataURL("image/webp").startsWith("data:image/webp");
         const mime = canWebp ? "image/webp" : "image/jpeg";
         const ext = canWebp ? "webp" : "jpg";
-        const quality = canWebp ? 0.82 : 0.85;
-
-        canvas.toBlob(async (blob) => {
-          if (!blob) return reject(new Error("Не удалось конвертировать фото"));
-          resolve({ bytes: new Uint8Array(await blob.arrayBuffer()), ext, mime });
-        }, mime, quality);
+        canvas.toBlob((blob) => {
+          if (!blob) return reject(new Error("Не удалось сжать фото"));
+          resolve({ blob, ext, mime });
+        }, mime, canWebp ? 0.82 : 0.85);
       };
       img.onerror = () => {
         URL.revokeObjectURL(url);
         reject(new Error("Браузер не смог прочитать картинку (если это HEIC с айфона — сделай скрин или выбери JPG)"));
       };
       img.src = url;
+    });
+  }
+
+  async function extractVideoThumbnail(file) {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const video = document.createElement("video");
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = "auto";
+      let done = false;
+
+      const finish = (res) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        URL.revokeObjectURL(url);
+        resolve(res);
+      };
+
+      const timer = setTimeout(() => finish(null), 5000);
+
+      const captureFrame = () => {
+        if (!video.videoWidth || !video.videoHeight) return finish(null);
+        const maxW = 640;
+        let w = video.videoWidth;
+        let h = video.videoHeight;
+        if (w > maxW) {
+          h = Math.round((h * maxW) / w);
+          w = maxW;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(video, 0, 0, w, h);
+
+        const canWebp = canvas.toDataURL("image/webp").startsWith("data:image/webp");
+        const mime = canWebp ? "image/webp" : "image/jpeg";
+        const ext = canWebp ? "webp" : "jpg";
+        canvas.toBlob((blob) => {
+          if (!blob) return finish(null);
+          finish({ blob, ext, mime });
+        }, mime, 0.75);
+      };
+
+      video.onloadedmetadata = () => {
+        try {
+          video.currentTime = video.duration && video.duration > 0.6 ? 0.5 : 0.1;
+        } catch {
+          captureFrame();
+        }
+      };
+      video.onseeked = captureFrame;
+      video.onerror = () => finish(null);
+      video.src = url;
     });
   }
 
@@ -359,10 +629,18 @@
       }
 
       const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]")
-        .filter(item => Date.now() - item._ts < 120000);
+        .filter(item => Date.now() - item._ts < 180000);
       localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(opt));
-      const ids = new Set(posts.map(p => p.id));
-      opt.forEach(item => { if (!ids.has(item.id)) posts.unshift(item); });
+      const mapById = new Map(posts.map(p => [p.id, p]));
+      opt.forEach(item => {
+        if (!mapById.has(item.id)) posts.unshift(item);
+        else {
+          const existing = mapById.get(item.id);
+          if ((item.comments || []).length > (existing.comments || []).length) {
+            existing.comments = item.comments;
+          }
+        }
+      });
     } else {
       try {
         const filePosts = await fetch("./data/posts.json").then(r => r.json());
@@ -414,6 +692,30 @@
     `;
   }
 
+  function mediaUrlWithFallback(src) {
+    if (!IS_GITHUB_READY || !src || src.startsWith("data:") || src.startsWith("http") || src.startsWith("blob:")) {
+      return "";
+    }
+    return `https://raw.githubusercontent.com/${GH.owner}/${GH.repo}/${GH.branch || "main"}/${src.replace(/^\.\//, "")}`;
+  }
+
+  function getPostImages(post) {
+    const sessionVal = state.sessionMedia[post.id];
+    const urls = Array.isArray(post.mediaUrls) && post.mediaUrls.length
+      ? post.mediaUrls
+      : (post.mediaUrl ? [post.mediaUrl] : []);
+
+    const sArr = Array.isArray(sessionVal) ? sessionVal : (sessionVal ? [sessionVal] : []);
+    const count = Math.max(sArr.length, urls.length);
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      const src = sArr[i] || urls[i];
+      if (!src) continue;
+      out.push({ src, fallback: mediaUrlWithFallback(urls[i] || src) });
+    }
+    return out;
+  }
+
   function renderFeed() {
     const grid = document.getElementById("feed-grid");
     const empty = document.getElementById("empty-state");
@@ -442,16 +744,25 @@
     grid.innerHTML = filtered.map(post => {
       const isCol = Boolean(post.featured);
       let thumbHtml = "";
-      if (post.type === "photos" && (post.mediaUrl || state.sessionMedia[post.id])) {
-        const src = state.sessionMedia[post.id] || post.mediaUrl;
-        const rawFallback = IS_GITHUB_READY && !src.startsWith("data:") && !src.startsWith("http")
-          ? `https://raw.githubusercontent.com/${GH.owner}/${GH.repo}/${GH.branch || "main"}/${src.replace(/^\.\//, "")}`
-          : "";
-        thumbHtml = `<img src="${esc(src)}" alt="${esc(post.title)}" loading="lazy" ${rawFallback ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(rawFallback)}';}"` : ""}>`;
+      if (post.type === "photos") {
+        const imgs = getPostImages(post);
+        if (imgs.length) {
+          const first = imgs[0];
+          const badge = imgs.length > 1 ? `<span class="photo-count-badge">📷 ${imgs.length}</span>` : "";
+          thumbHtml = `<img src="${esc(first.src)}" alt="${esc(post.title)}" loading="lazy" ${first.fallback ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(first.fallback)}';}"` : ""}>${badge}`;
+        }
       } else if (post.type === "video") {
+        const thumbSrc = state.sessionMedia[post.id + "_thumb"] || post.thumbUrl;
         const ytId = extractYouTubeId(post.videoUrl);
-        if (ytId) {
+        if (thumbSrc) {
+          const fb = mediaUrlWithFallback(thumbSrc);
+          thumbHtml = `<img src="${esc(thumbSrc)}" alt="${esc(post.title)}" loading="lazy" ${fb ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(fb)}';}"` : ""}><span class="video-badge">▶</span>`;
+        } else if (ytId) {
           thumbHtml = `<img src="https://img.youtube.com/vi/${esc(ytId)}/hqdefault.jpg" alt=""><span class="video-badge">▶</span>`;
+        } else if (state.sessionMedia[post.id] || post.mediaUrl || post.videoUrl) {
+          const vSrc = state.sessionMedia[post.id] || post.mediaUrl || post.videoUrl;
+          const fb = mediaUrlWithFallback(vSrc);
+          thumbHtml = `<video class="tile-video-preview" src="${esc(vSrc)}#t=0.5" muted playsinline preload="metadata" ${fb ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(fb)}#t=0.5';}"` : ""}></video><span class="video-badge">▶</span>`;
         } else {
           thumbHtml = `<div class="tile-preview-text">${esc(post.text || "Видеозапись из архива")}</div><span class="video-badge">▶</span>`;
         }
@@ -470,6 +781,7 @@
       const subMeta = post.type === "quotes" && post.quoteAuthor
         ? `© ${post.quoteAuthor}`
         : `Автор: ${post.author || "Анон"}`;
+      const comCount = (post.comments || []).length;
 
       return `
         <article class="tile ${isCol ? "tile-collection" : ""}" data-post-id="${esc(post.id)}">
@@ -480,7 +792,7 @@
           </div>
           <div class="tile-stats">
             <span class="tile-type-badge">${TYPE_ICONS[post.type] || ""} ${esc(labelForType(post.type))}</span>
-            <span>${formatDate(post.createdAt)}</span>
+            <span>${comCount > 0 ? `💬 ${comCount} · ` : ""}${formatDate(post.createdAt)}</span>
           </div>
         </article>
       `;
@@ -491,11 +803,12 @@
     return { thoughts: "Мысль", quotes: "Цитата", video: "Видео", books: "Книга", photos: "Фото" }[type] || type;
   }
 
-  // ====== ПРОСМОТР ПОСТА И ЧИТАЛКА КНИГИ ======
+  // ====== ПРОСМОТР ПОСТА, КАРУСЕЛЬ И КОММЕНТАРИИ ======
   function openPostModal(postId) {
     const post = state.posts.find(p => p.id === postId);
     if (!post) return;
 
+    state.carouselMove = null;
     const titleEl = document.getElementById("view-modal-title");
     const bodyEl = document.getElementById("view-modal-body");
     titleEl.textContent = post.title;
@@ -532,7 +845,7 @@
           </div>
         </div>`;
 
-      bodyEl.innerHTML = mainHtml + buildMetaTable(post);
+      bodyEl.innerHTML = mainHtml + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
 
       const renderPage = () => {
         document.getElementById("br-content").textContent = pages[pageIdx];
@@ -561,38 +874,248 @@
         a.click();
       };
     } else if (post.type === "photos") {
-      const src = state.sessionMedia[post.id] || post.mediaUrl || "";
-      mainHtml = `
-        ${src ? `<div class="detail-media"><img src="${esc(src)}" alt="${esc(post.title)}"></div>` : ""}
-        ${post.text ? `<div class="detail-thought-box">${esc(post.text)}</div>` : ""}
-      `;
-      bodyEl.innerHTML = mainHtml + buildMetaTable(post);
+      const imgs = getPostImages(post);
+      if (imgs.length <= 1) {
+        const one = imgs[0];
+        mainHtml = `
+          ${one ? `<div class="detail-media"><img src="${esc(one.src)}" alt="${esc(post.title)}" ${one.fallback ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(one.fallback)}';}"` : ""}></div>` : ""}
+          ${post.text ? `<div class="detail-thought-box">${esc(post.text)}</div>` : ""}
+        `;
+        bodyEl.innerHTML = mainHtml + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
+      } else {
+        mainHtml = `
+          <div class="carousel-wrap">
+            <div class="carousel-stage" id="car-stage">
+              <img id="car-main-img" src="${esc(imgs[0].src)}" alt="${esc(post.title)}">
+              <button type="button" class="carousel-nav carousel-prev" id="car-prev" aria-label="Назад">‹</button>
+              <button type="button" class="carousel-nav carousel-next" id="car-next" aria-label="Вперёд">›</button>
+              <div class="carousel-counter" id="car-counter">1 / ${imgs.length}</div>
+            </div>
+            <div class="carousel-thumbs" id="car-thumbs">
+              ${imgs.map((im, i) => `
+                <button type="button" class="carousel-thumb ${i === 0 ? "active" : ""}" data-car-idx="${i}">
+                  <img src="${esc(im.src)}" alt="" ${im.fallback ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(im.fallback)}';}"` : ""}>
+                </button>
+              `).join("")}
+            </div>
+          </div>
+          ${post.text ? `<div class="detail-thought-box">${esc(post.text)}</div>` : ""}
+        `;
+        bodyEl.innerHTML = mainHtml + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
+
+        let cur = 0;
+        const mainImg = document.getElementById("car-main-img");
+        const counterEl = document.getElementById("car-counter");
+        const thumbBtns = bodyEl.querySelectorAll(".carousel-thumb");
+
+        const setSlide = (idx) => {
+          cur = (idx + imgs.length) % imgs.length;
+          const im = imgs[cur];
+          mainImg.dataset.f = "";
+          mainImg.onerror = im.fallback ? () => {
+            if (!mainImg.dataset.f) { mainImg.dataset.f = "1"; mainImg.src = im.fallback; }
+          } : null;
+          mainImg.src = im.src;
+          counterEl.textContent = `${cur + 1} / ${imgs.length}`;
+          thumbBtns.forEach((b, i) => {
+            b.classList.toggle("active", i === cur);
+            if (i === cur) b.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
+          });
+        };
+
+        setSlide(0);
+        document.getElementById("car-prev").onclick = () => setSlide(cur - 1);
+        document.getElementById("car-next").onclick = () => setSlide(cur + 1);
+        thumbBtns.forEach(b => {
+          b.onclick = () => setSlide(Number(b.dataset.carIdx));
+        });
+
+        // Свайпы на телефоне
+        let touchX = 0;
+        const stage = document.getElementById("car-stage");
+        stage.addEventListener("touchstart", (e) => { touchX = e.changedTouches[0].clientX; }, { passive: true });
+        stage.addEventListener("touchend", (e) => {
+          const dx = e.changedTouches[0].clientX - touchX;
+          if (Math.abs(dx) > 40) setSlide(dx < 0 ? cur + 1 : cur - 1);
+        }, { passive: true });
+
+        state.carouselMove = (dir) => setSlide(cur + dir);
+      }
     } else if (post.type === "video") {
       const src = state.sessionMedia[post.id] || post.mediaUrl || "";
       const ytId = extractYouTubeId(post.videoUrl);
+      const vSrc = src || post.videoUrl || "";
+      const fb = mediaUrlWithFallback(vSrc);
       let mediaEl = "";
       if (ytId) {
         mediaEl = `<div class="detail-media"><iframe src="https://www.youtube.com/embed/${esc(ytId)}" allowfullscreen></iframe></div>`;
-      } else if (src || post.videoUrl) {
-        mediaEl = `<div class="detail-media"><video src="${esc(src || post.videoUrl)}" controls playsinline></video></div>`;
+      } else if (vSrc) {
+        mediaEl = `<div class="detail-media"><video src="${esc(vSrc)}" controls playsinline ${fb ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(fb)}';}"` : ""}></video></div>`;
       }
-      bodyEl.innerHTML = `${mediaEl}${post.text ? `<div class="detail-thought-box">${esc(post.text)}</div>` : ""}` + buildMetaTable(post);
+      bodyEl.innerHTML = `${mediaEl}${post.text ? `<div class="detail-thought-box">${esc(post.text)}</div>` : ""}` + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
     } else if (post.type === "quotes") {
       mainHtml = `
         <div class="detail-quote-box">
           «${esc(post.text)}»
           ${post.quoteAuthor ? `<div class="detail-quote-author">— ${esc(post.quoteAuthor)}</div>` : ""}
         </div>`;
-      bodyEl.innerHTML = mainHtml + buildMetaTable(post);
+      bodyEl.innerHTML = mainHtml + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
     } else {
       mainHtml = `<div class="detail-thought-box">${esc(post.text)}</div>`;
-      bodyEl.innerHTML = mainHtml + buildMetaTable(post);
+      bodyEl.innerHTML = mainHtml + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
     }
 
     const delBtn = document.getElementById("view-delete-btn");
     if (delBtn) delBtn.onclick = () => deletePost(post.id);
 
+    renderCommentsSection(post);
     openModal("modal-view");
+  }
+
+  function renderCommentsSection(post) {
+    const wrap = document.getElementById("view-comments-wrap");
+    if (!wrap) return;
+    const comments = Array.isArray(post.comments) ? post.comments : [];
+
+    const listHtml = comments.length
+      ? comments.map(c => {
+          const isCreatorComment = (c.author || "").toLowerCase() === "miralys";
+          const canDelComment = state.currentUser && (
+            state.currentUser.isCreator ||
+            state.currentUser.username.toLowerCase() === (c.author || "").toLowerCase()
+          );
+          return `
+            <div class="comment-item">
+              <div class="comment-head">
+                <div>
+                  <span class="comment-author">${esc(c.author)}</span>
+                  ${isCreatorComment ? `<span class="comment-creator-tag">Создатель</span>` : ""}
+                </div>
+                <div class="comment-meta-right">
+                  <span>${formatDateTime(c.createdAt)}</span>
+                  ${canDelComment ? `<button class="comment-del-btn" data-del-comment="${esc(c.id)}" title="Удалить коммент">✕</button>` : ""}
+                </div>
+              </div>
+              <div class="comment-body">${esc(c.text)}</div>
+            </div>
+          `;
+        }).join("")
+      : `<div class="muted-note">Комментариев пока нет. Будь первым!</div>`;
+
+    const formHtml = state.currentUser
+      ? `
+        <form id="comment-form" class="comment-form">
+          <textarea id="comment-input" rows="2" required placeholder="Написать комментарий..."></textarea>
+          <div style="display:flex;justify-content:flex-end;">
+            <button type="submit" id="comment-submit-btn" class="btn-primary">Отправить</button>
+          </div>
+        </form>
+      `
+      : `
+        <div class="comment-login-prompt">
+          <span>Хочешь оставить коммент? Войди в аккаунт!</span>
+          <button type="button" id="comment-login-btn" class="btn-secondary">Войти / Рега</button>
+        </div>
+      `;
+
+    wrap.innerHTML = `
+      <div class="comments-section">
+        <h4 class="comments-title">Комментарии (${comments.length})</h4>
+        <div class="comments-list">${listHtml}</div>
+        ${formHtml}
+      </div>
+    `;
+
+    const cForm = document.getElementById("comment-form");
+    if (cForm) {
+      cForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const input = document.getElementById("comment-input");
+        const text = input.value.trim();
+        if (!text) return;
+        await handleAddComment(post.id, text);
+      };
+    }
+
+    const cLoginBtn = document.getElementById("comment-login-btn");
+    if (cLoginBtn) {
+      cLoginBtn.onclick = () => {
+        closeModal("modal-view");
+        syncAuthModalFields();
+        openModal("modal-auth");
+      };
+    }
+
+    wrap.querySelectorAll("[data-del-comment]").forEach(btn => {
+      btn.onclick = () => handleDeleteComment(post.id, btn.dataset.delComment);
+    });
+  }
+
+  async function handleAddComment(postId, text) {
+    if (!ensureTokenInteractive()) return;
+    const btn = document.getElementById("comment-submit-btn");
+    if (btn) { btn.disabled = true; btn.textContent = "Отправляем..."; }
+
+    const newComment = {
+      id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      author: state.currentUser.username,
+      text,
+      createdAt: new Date().toISOString()
+    };
+
+    try {
+      if (IS_GITHUB_READY) {
+        state.posts = await ghUpdateJson(
+          "data/posts.json",
+          list => list.map(p => p.id === postId ? { ...p, comments: [...(p.comments || []), newComment] } : p),
+          `Comment on ${postId}`
+        );
+        const updated = state.posts.find(p => p.id === postId);
+        if (updated) saveOptimisticPost(updated);
+      } else {
+        state.posts = state.posts.map(p => p.id === postId ? { ...p, comments: [...(p.comments || []), newComment] } : p);
+        localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(state.posts));
+      }
+
+      const freshPost = state.posts.find(p => p.id === postId);
+      if (freshPost) renderCommentsSection(freshPost);
+      renderFeed();
+    } catch (err) {
+      alert("Не вышло отправить коммент: " + err.message);
+      if (btn) { btn.disabled = false; btn.textContent = "Отправить"; }
+    }
+  }
+
+  async function handleDeleteComment(postId, commentId) {
+    if (!confirm("Удалить этот комментарий?")) return;
+    if (!ensureTokenInteractive()) return;
+
+    try {
+      if (IS_GITHUB_READY) {
+        state.posts = await ghUpdateJson(
+          "data/posts.json",
+          list => list.map(p => p.id === postId ? { ...p, comments: (p.comments || []).filter(c => c.id !== commentId) } : p),
+          `Delete comment on ${postId}`
+        );
+        const updated = state.posts.find(p => p.id === postId);
+        if (updated) saveOptimisticPost(updated);
+      } else {
+        state.posts = state.posts.map(p => p.id === postId ? { ...p, comments: (p.comments || []).filter(c => c.id !== commentId) } : p);
+        localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(state.posts));
+      }
+
+      const freshPost = state.posts.find(p => p.id === postId);
+      if (freshPost) renderCommentsSection(freshPost);
+      renderFeed();
+    } catch (err) {
+      alert("Ошибка удаления коммента: " + err.message);
+    }
+  }
+
+  function saveOptimisticPost(post) {
+    const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]").filter(p => p.id !== post.id);
+    opt.unshift({ ...post, _ts: Date.now() });
+    localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(opt));
   }
 
   function buildMetaTable(post) {
@@ -613,20 +1136,10 @@
 
   async function deletePost(postId) {
     if (!confirm("Точно выпилить эту запись (и её файлы) из архива?")) return;
+    if (!ensureTokenInteractive()) return;
+
     const target = state.posts.find(p => p.id === postId);
     const delBtn = document.getElementById("view-delete-btn");
-
-    if (IS_GITHUB_READY && CFG.ENCRYPTED_TOKEN && !getUnlockedToken()) {
-      const phrase = prompt("Напиши 0 (так надо, по-братски):");
-      if (phrase === null) return;
-      const tok = decryptToken(CFG.ENCRYPTED_TOKEN, phrase);
-      if (!tok) {
-        alert("Братик, там же написано: напиши 0!");
-        return;
-      }
-      saveUnlockedToken(tok);
-    }
-
     if (delBtn) {
       delBtn.disabled = true;
       delBtn.textContent = "Удаляем...";
@@ -639,12 +1152,17 @@
         const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]").filter(p => p.id !== postId);
         localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(opt));
 
-        if (target && target.mediaUrl && target.mediaUrl.startsWith("./uploads/")) {
-          const cleanPath = target.mediaUrl.replace(/^\.\//, "");
+        // Сносим все фотки альбома, основное видео и превьюшку
+        const allMedia = [target?.mediaUrl, ...(target?.mediaUrls || []), target?.thumbUrl];
+        const pathsToRemove = [...new Set(
+          allMedia.filter(u => u && u.startsWith("./uploads/")).map(u => u.replace(/^\.\//, ""))
+        )];
+
+        for (const p of pathsToRemove) {
           try {
-            await ghDeleteFile(cleanPath, `Delete media for ${postId}`);
+            await ghDeleteFile(p, `Delete media for ${postId}`);
           } catch (err) {
-            console.warn("Не вышло снести файл из uploads:", err);
+            console.warn("Не вышло снести файл:", p, err);
           }
         }
       } else {
@@ -781,10 +1299,17 @@
     const fileInput = document.getElementById("pub-file");
     if (type === "photos") {
       fileInput.accept = "image/*";
-      document.getElementById("pub-file-label").textContent = "Загрузить фото (автоматом сожмётся в WebP)";
+      fileInput.multiple = true;
+      document.getElementById("pub-file-label").textContent = "Выбрать фото (можно сразу несколько, сожмутся в WebP)";
     } else if (type === "video") {
       fileInput.accept = "video/*";
-      document.getElementById("pub-file-label").textContent = "Загрузить видеофайл (до 25 МБ)";
+      fileInput.multiple = false;
+      const maxLabel = HAS_CLOUDINARY ? 100 : 65;
+      document.getElementById("pub-file-label").textContent = `Загрузить видеофайл (до ${maxLabel} МБ)`;
+      clearSelectedPhotos();
+    } else {
+      fileInput.multiple = false;
+      clearSelectedPhotos();
     }
 
     const textLabels = {
@@ -798,6 +1323,7 @@
 
     const needPass = IS_GITHUB_READY && Boolean(CFG.ENCRYPTED_TOKEN) && !getUnlockedToken();
     document.getElementById("pub-passphrase-group").classList.toggle("hidden", !needPass);
+    renderSelectedPhotosPreview();
   }
 
   async function handlePublishSubmit(e) {
@@ -807,6 +1333,7 @@
     const btn = document.getElementById("pub-submit-btn");
     errBox.classList.add("hidden");
     statusBox.classList.add("hidden");
+    hideProgress();
 
     const showErr = (m) => { errBox.textContent = m; errBox.classList.remove("hidden"); };
 
@@ -829,8 +1356,8 @@
     const quoteAuthor = document.getElementById("pub-quote-author").value.trim();
     const bookAuthor = document.getElementById("pub-book-author").value.trim();
     const bookYear = document.getElementById("pub-book-year").value.trim();
-    const videoUrl = document.getElementById("pub-video-url").value.trim();
-    const file = document.getElementById("pub-file").files[0];
+    let videoUrl = document.getElementById("pub-video-url").value.trim();
+    const singleFile = document.getElementById("pub-file").files[0];
     const tags = document.getElementById("pub-tags").value
       .split(",").map(s => s.trim()).filter(Boolean);
 
@@ -838,47 +1365,145 @@
     if ((type === "thoughts" || type === "quotes" || type === "books") && !text) {
       return showErr("Напиши хоть пару слов!");
     }
-    if (type === "photos" && !file) return showErr("Выбери фотографию!");
-    if (type === "video" && !file && !videoUrl) return showErr("Выбери видеофайл или вставь ссылку!");
+    if (type === "photos" && !state.selectedPhotoFiles.length) {
+      return showErr("Выбери хотя бы одну фотку!");
+    }
+    if (type === "video" && !singleFile && !videoUrl) {
+      return showErr("Выбери видеофайл или вставь ссылку!");
+    }
 
     const postId = `post-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     let mediaUrl = "";
+    let mediaUrls = [];
+    let thumbUrl = "";
 
     btn.disabled = true;
     try {
-      if (file) {
-        if (file.size > (CFG.MAX_UPLOAD_MB || 25) * 1024 * 1024 && type === "video") {
-          throw new Error(`Файл больше ${CFG.MAX_UPLOAD_MB || 25} МБ. Залей на YouTube и вставь ссылку!`);
-        }
-        statusBox.textContent = type === "photos" ? "Конвертируем в WebP и грузим..." : "Загружаем видео...";
-        statusBox.classList.remove("hidden");
+      if (type === "photos") {
+        const files = state.selectedPhotoFiles;
+        const processedList = [];
+        let totalBytes = 0;
 
-        let bytes, ext, mime;
-        if (type === "photos") {
-          const processed = await processImageForUpload(file);
-          bytes = processed.bytes;
-          ext = processed.ext;
-          mime = processed.mime;
-        } else {
-          bytes = new Uint8Array(await file.arrayBuffer());
-          ext = (file.name.split(".").pop() || "mp4").toLowerCase().replace(/[^a-z0-9]/g, "");
-          mime = file.type || "video/mp4";
+        for (let i = 0; i < files.length; i++) {
+          setProgress(
+            Math.round(((i + 0.5) / files.length) * 25),
+            `Сжимаем фото ${i + 1} из ${files.length} в WebP...`
+          );
+          const processed = await processImageForUpload(files[i]);
+          totalBytes += processed.blob.size;
+          const suffix = files.length === 1 ? "" : `_${i}`;
+          const filePath = `uploads/${postId}${suffix}.${processed.ext}`;
+          processedList.push({
+            path: filePath,
+            blob: processed.blob,
+            mime: processed.mime,
+            blobUrl: URL.createObjectURL(processed.blob)
+          });
         }
 
-        const filePath = `uploads/${postId}.${ext}`;
-        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
-        state.sessionMedia[postId] = blobUrl;
+        if (totalBytes / (1024 * 1024) > 65) {
+          throw new Error("Пачка фоток даже после сжатия больше 65 МБ — раздели на два поста!");
+        }
+
+        state.sessionMedia[postId] = processedList.map(p => p.blobUrl);
 
         if (IS_GITHUB_READY) {
-          await ghPutRaw(filePath, bytesToBase64(bytes), `Upload media ${postId}`);
-          mediaUrl = `./${filePath}`;
+          const filesToPush = [];
+          for (let i = 0; i < processedList.length; i++) {
+            filesToPush.push({
+              path: processedList[i].path,
+              base64: await blobToBase64(processedList[i].blob)
+            });
+          }
+
+          if (filesToPush.length === 1 && processedList[0].blob.size <= 3 * 1024 * 1024) {
+            await ghPutRaw(
+              filesToPush[0].path,
+              filesToPush[0].base64,
+              `Upload photo ${postId}`,
+              null,
+              (pct) => setProgress(25 + Math.round(pct * 0.65), `Загрузка фото: ${pct}%`)
+            );
+          } else {
+            await ghUploadViaGitBlobs(
+              filesToPush,
+              `Upload ${filesToPush.length} photo(s) ${postId}`,
+              (pct, _l, _t, idx, cnt) => {
+                setProgress(25 + Math.round(pct * 0.68), `Отправка фото (${idx}/${cnt}): ${pct}%`);
+              }
+            );
+          }
+          mediaUrls = processedList.map(p => `./${p.path}`);
+          mediaUrl = mediaUrls[0];
         } else {
-          mediaUrl = bytes.length < 2 * 1024 * 1024
-            ? `data:${mime};base64,${bytesToBase64(bytes)}`
-            : blobUrl;
+          mediaUrls = [];
+          for (const p of processedList) {
+            mediaUrls.push(
+              p.blob.size < 1.5 * 1024 * 1024
+                ? `data:${p.mime};base64,${await blobToBase64(p.blob)}`
+                : p.blobUrl
+            );
+          }
+          mediaUrl = mediaUrls[0];
+        }
+      } else if (type === "video" && singleFile) {
+        const sizeMb = singleFile.size / (1024 * 1024);
+        const maxMb = HAS_CLOUDINARY ? 100 : 65;
+        if (sizeMb > maxMb) {
+          throw new Error(`Файл ${sizeMb.toFixed(1)} МБ — лимит загрузки ${maxMb} МБ. Сожми видос или кинь ссылку с YouTube!`);
+        }
+
+        setProgress(5, "Выхватываем обложку видео...");
+        const thumbData = await extractVideoThumbnail(singleFile);
+        if (thumbData) {
+          state.sessionMedia[postId + "_thumb"] = URL.createObjectURL(thumbData.blob);
+        }
+
+        if (IS_GITHUB_READY && HAS_CLOUDINARY) {
+          const onProg = (pct, loaded, total) => {
+            const mbL = (loaded / 1048576).toFixed(1);
+            const mbT = (total / 1048576).toFixed(1);
+            setProgress(10 + Math.round(pct * 0.85), `Загрузка видео: ${pct}% (${mbL} / ${mbT} МБ)`);
+          };
+          const cldRes = await uploadVideoToCloudinary(singleFile, onProg);
+          videoUrl = cldRes.videoUrl;
+          thumbUrl = cldRes.thumbUrl;
+        } else if (IS_GITHUB_READY) {
+          const ext = (singleFile.name.split(".").pop() || "mp4").toLowerCase().replace(/[^a-z0-9]/g, "");
+          const filePath = `uploads/${postId}.${ext}`;
+          state.sessionMedia[postId] = URL.createObjectURL(singleFile);
+
+          setProgress(10, `Подготовка видео (${sizeMb.toFixed(1)} МБ)...`);
+          const filesToPush = [{ path: filePath, base64: await blobToBase64(singleFile) }];
+          let thumbPath = "";
+          if (thumbData) {
+            thumbPath = `uploads/${postId}_thumb.${thumbData.ext}`;
+            filesToPush.push({ path: thumbPath, base64: await blobToBase64(thumbData.blob) });
+          }
+
+          const onProg = (pct, loaded, total) => {
+            const mbL = (loaded / 1048576).toFixed(1);
+            const mbT = (total / 1048576).toFixed(1);
+            setProgress(10 + Math.round(pct * 0.82), `Отправка: ${pct}% (${mbL} / ${mbT} МБ)`);
+          };
+
+          if (singleFile.size > 3 * 1024 * 1024) {
+            await ghUploadViaGitBlobs(filesToPush, `Upload video ${postId}`, onProg);
+          } else {
+            await ghPutRaw(filePath, filesToPush[0].base64, `Upload video ${postId}`, null, onProg);
+            if (thumbPath) {
+              await ghPutRaw(thumbPath, filesToPush[1].base64, `Upload video thumb ${postId}`);
+            }
+          }
+          mediaUrl = `./${filePath}`;
+          if (thumbPath) thumbUrl = `./${thumbPath}`;
+        } else {
+          mediaUrl = URL.createObjectURL(singleFile);
+          state.sessionMedia[postId] = mediaUrl;
         }
       }
 
+      setProgress(95, "Записываем пост в архив...");
       const newPost = {
         id: postId,
         type,
@@ -886,7 +1511,8 @@
         text,
         author: state.currentUser.username,
         createdAt: new Date().toISOString(),
-        tags
+        tags,
+        comments: []
       };
       if (type === "quotes" && quoteAuthor) newPost.quoteAuthor = quoteAuthor;
       if (type === "books") {
@@ -894,27 +1520,30 @@
         newPost.bookYear = bookYear || "1 стр.";
       }
       if (mediaUrl) newPost.mediaUrl = mediaUrl;
+      if (mediaUrls.length > 1) newPost.mediaUrls = mediaUrls;
+      if (thumbUrl) newPost.thumbUrl = thumbUrl;
       if (videoUrl) newPost.videoUrl = videoUrl;
-
-      statusBox.textContent = "Пушим запись в архив...";
-      statusBox.classList.remove("hidden");
 
       if (IS_GITHUB_READY) {
         state.posts = await ghUpdateJson("data/posts.json", list => [newPost, ...list], `Add ${type}: ${title}`);
-        const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]");
-        opt.unshift({ ...newPost, _ts: Date.now() });
-        localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(opt));
+        saveOptimisticPost(newPost);
       } else {
         state.posts.unshift(newPost);
         localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(state.posts));
       }
 
+      setProgress(100, "Готово!");
       document.getElementById("publish-form").reset();
+      clearSelectedPhotos();
       syncPublishFormFields();
       updateCounts();
       renderFeed();
-      closeModal("modal-publish");
+      setTimeout(() => {
+        hideProgress();
+        closeModal("modal-publish");
+      }, 300);
     } catch (err) {
+      hideProgress();
       showErr("Не вышло запушить: " + err.message);
       syncPublishFormFields();
     } finally {
@@ -963,7 +1592,20 @@
 
   // ====== МОДАЛКИ И СОБЫТИЯ ======
   function openModal(id) { document.getElementById(id).classList.remove("hidden"); }
-  function closeModal(id) { document.getElementById(id).classList.add("hidden"); }
+
+  function closeModal(id) {
+    const modal = document.getElementById(id);
+    if (!modal) return;
+    modal.querySelectorAll("video, audio").forEach(m => {
+      try { m.pause(); m.removeAttribute("src"); m.load(); } catch {}
+    });
+    modal.querySelectorAll("iframe").forEach(f => { f.src = "about:blank"; });
+    if (id === "modal-view") {
+      document.getElementById("view-modal-body").innerHTML = "";
+      state.carouselMove = null;
+    }
+    modal.classList.add("hidden");
+  }
 
   function setTab(tab) {
     state.currentTab = tab;
@@ -1062,12 +1704,37 @@
         openModal("modal-auth");
         return;
       }
+      hideProgress();
       syncPublishFormFields();
       openModal("modal-publish");
     };
     document.getElementById("nav-publish-btn").addEventListener("click", openPublish);
     document.getElementById("hero-publish-cta").addEventListener("click", openPublish);
     document.getElementById("pub-type").addEventListener("change", syncPublishFormFields);
+
+    // Обработка выбора нескольких фото (можно докидывать из разных папок)
+    document.getElementById("pub-file").addEventListener("change", (e) => {
+      if (document.getElementById("pub-type").value !== "photos") return;
+      const picked = [...(e.target.files || [])];
+      if (!picked.length) return;
+
+      const existingKeys = new Set(state.selectedPhotoFiles.map(f => `${f.name}_${f.size}_${f.lastModified}`));
+      for (const f of picked) {
+        if (state.selectedPhotoFiles.length >= 20) {
+          alert("Максимум 20 фото за один пост, братик!");
+          break;
+        }
+        const key = `${f.name}_${f.size}_${f.lastModified}`;
+        if (!existingKeys.has(key)) {
+          f._previewUrl = URL.createObjectURL(f);
+          state.selectedPhotoFiles.push(f);
+          existingKeys.add(key);
+        }
+      }
+      e.target.value = "";
+      renderSelectedPhotosPreview();
+    });
+
     document.getElementById("publish-form").addEventListener("submit", handlePublishSubmit);
 
     document.getElementById("nav-users-btn").addEventListener("click", openUsersModal);
@@ -1086,8 +1753,18 @@
     });
     document.querySelectorAll(".modal-backdrop").forEach(bg => {
       bg.addEventListener("click", (e) => {
-        if (e.target === bg) bg.classList.add("hidden");
+        if (e.target === bg) closeModal(bg.id);
       });
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        document.querySelectorAll(".modal-backdrop:not(.hidden)").forEach(m => closeModal(m.id));
+      } else if (state.carouselMove && !document.getElementById("modal-view").classList.contains("hidden")) {
+        if (!["TEXTAREA", "INPUT"].includes(document.activeElement?.tagName)) {
+          if (e.key === "ArrowLeft") state.carouselMove(-1);
+          if (e.key === "ArrowRight") state.carouselMove(1);
+        }
+      }
     });
   }
 

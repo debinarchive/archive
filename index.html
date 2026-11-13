@@ -7,13 +7,11 @@
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-  <!-- Плашка режима разработки (?dev) -->
   <div id="dev-banner" class="dev-banner hidden">
     <span>[DEV MODE // ОБХОД СИСТЕМЫ: ВХОД ДЛЯ СОЗДАТЕЛЯ MIRALYS РАЗБЛОКИРОВАН]</span>
     <span id="mode-indicator"></span>
   </div>
 
-  <!-- Верхняя чёрная шапка (ia-topnav) -->
   <header class="ia-topnav">
     <nav class="primary-nav">
       <button id="mobile-menu-btn" class="hamburger-btn" aria-label="Меню">
@@ -70,7 +68,6 @@
       </div>
     </nav>
 
-    <!-- Вторичная полоса подменю -->
     <div id="subnav-bar" class="desktop-subnav">
       <ul id="subnav-tabs">
         <li><button class="subnav-link active" data-tab="all">Главная</button></li>
@@ -84,23 +81,20 @@
     </div>
   </header>
 
-  <!-- Серая полоса поиска в стиле Wayback -->
   <section class="wayback-strip">
     <div class="wayback-inner">
       <div class="wayback-tagline">
         <strong>DEBIN WAYBACK:</strong> локальный архив посёлка и выпускников
       </div>
       <form id="search-form" class="wayback-search-form">
-        <input type="text" id="search-input" placeholder="Искать мемы, цитаты, фотки, книгу про 9-й класс..." autocomplete="off">
+        <input type="text" id="search-input" placeholder="Искать мемы, цитаты, фотки, книгу про Джана..." autocomplete="off">
         <button type="button" id="search-clear-btn" class="search-clear hidden" title="Очистить">✕</button>
         <button type="submit" class="btn-primary search-go-btn">НАЙТИ</button>
       </form>
     </div>
   </section>
 
-  <!-- Основной контейнер -->
   <main id="page-container">
-    <!-- Белый Hero-блок -->
     <section class="hero-block">
       <div class="hero-grid">
         <div class="hero-branding">
@@ -168,7 +162,6 @@
       </div>
     </section>
 
-    <!-- Сетка ленты -->
     <section class="feed-section">
       <div class="feed-header">
         <h2 id="feed-title">Весь архив</h2>
@@ -183,7 +176,6 @@
     </section>
   </main>
 
-  <!-- Футер -->
   <footer class="app-footer">
     DebinArchive • Архив локальных приколов посёлка • Создатель: Miralys
   </footer>
@@ -299,6 +291,14 @@
             Напиши 0 (так надо, по-братски)
             <input type="text" id="pub-passphrase" placeholder="0" autocomplete="off">
           </label>
+
+          <!-- ШКАЛА ЗАГРУЗКИ -->
+          <div id="pub-progress-wrap" class="progress-wrap hidden">
+            <div class="progress-track">
+              <div id="pub-progress-bar" class="progress-bar"></div>
+            </div>
+            <div id="pub-progress-text" class="progress-text">Подготовка... 0%</div>
+          </div>
 
           <div id="pub-status" class="form-status hidden"></div>
           <div id="pub-error" class="form-error hidden"></div>
