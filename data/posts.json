@@ -25,7 +25,15 @@
       "Викси",
       "Miralys"
     ],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1794576332349-bn1",
+        "author": "Miralys",
+        "text": "а мы никогда нихуя умного не несли. вечно одну хуйню, даже когда пытались говорить серьёзно",
+        "likes": [],
+        "createdAt": "2026-11-13T13:25:32.349Z"
+      }
+    ],
     "mediaUrl": "./uploads/post-1794576113926-tjj6.mp4",
     "thumbUrl": "./uploads/post-1794576113926-tjj6_thumb.jpg"
   },
