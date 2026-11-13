@@ -35,6 +35,14 @@
         "author": "Miralys",
         "text": "каждый день такая картина",
         "createdAt": "2026-11-13T11:48:47.362Z"
+      },
+      {
+        "id": "c-1794570994408-4bm",
+        "author": "Викси",
+        "text": "хахахвхвхв была",
+        "createdAt": "2026-11-13T11:56:34.408Z",
+        "parentId": "c-1794570527362-whh",
+        "replyTo": "Miralys"
       }
     ],
     "mediaUrl": "./uploads/post-1794570323299-42ko.jpg"
