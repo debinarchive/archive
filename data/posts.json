@@ -1,16 +1,5 @@
 [
   {
-    "id": "post-1794554416709-8v2d",
-    "type": "thoughts",
-    "title": "тест",
-    "text": "удалю потом",
-    "author": "Miralys",
-    "createdAt": "2026-11-13T07:20:16.710Z",
-    "tags": [
-      "тест"
-    ]
-  },
-  {
     "id": "book-9th-grade-legend",
     "type": "books",
     "featured": true,
