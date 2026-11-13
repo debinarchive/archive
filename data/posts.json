@@ -1,20 +1,10 @@
 [
   {
-    "id": "post-1794560383595-l5fg",
-    "type": "video",
-    "title": "хуйня",
-    "text": "",
-    "author": "Miralys",
-    "createdAt": "2026-11-13T08:59:49.508Z",
-    "tags": [],
-    "mediaUrl": "./uploads/post-1794560383595-l5fg.mp4"
-  },
-  {
     "id": "book-djan-2025",
     "type": "books",
     "featured": true,
     "title": "Путь к успеху: от пожарного до кочегара (2 часть)",
-    "bookAuthor": "Джан (Артур Боярский)",
+    "bookAuthor": "Джан",
     "bookYear": "2025 • 1 стр.",
     "author": "Miralys",
     "createdAt": "2025-01-20T00:00:00Z",
