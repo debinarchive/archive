@@ -10,16 +10,6 @@
     "mediaUrl": "./uploads/post-1794560383595-l5fg.mp4"
   },
   {
-    "id": "post-1794560315251-a7xf",
-    "type": "photos",
-    "title": "продам айфон",
-    "text": "",
-    "author": "Miralys",
-    "createdAt": "2026-11-13T08:58:37.956Z",
-    "tags": [],
-    "mediaUrl": "./uploads/post-1794560315251-a7xf.jpg"
-  },
-  {
     "id": "book-djan-2025",
     "type": "books",
     "featured": true,
