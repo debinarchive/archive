@@ -39,8 +39,17 @@
     selectedPhotoFiles: [],
     carouselMove: null,
     replyToComment: null,
-    threadToggles: {}
+    threadToggles: {},
+    activeModalPostId: null
   };
+
+  // Очередь записей на GitHub, чтобы быстрые клики по лайкам не вызывали конфликтов
+  let ghWriteQueue = Promise.resolve();
+  function enqueueGhWrite(task) {
+    const run = ghWriteQueue.then(task, task);
+    ghWriteQueue = run.catch(() => {});
+    return run;
+  }
 
   // ====== КРИПТОГРАФИЯ (ЧИСТЫЙ SHA-256) ======
   const K = [
@@ -242,6 +251,20 @@
     }
     saveUnlockedToken(tok);
     return true;
+  }
+
+  function hasUserLiked(likesArr) {
+    if (!state.currentUser || !Array.isArray(likesArr)) return false;
+    const me = state.currentUser.username.toLowerCase();
+    return likesArr.some(u => String(u).toLowerCase() === me);
+  }
+
+  function toggleUserInLikes(likesArr, username) {
+    const list = Array.isArray(likesArr) ? likesArr : [];
+    const me = username.toLowerCase();
+    return list.some(u => String(u).toLowerCase() === me)
+      ? list.filter(u => String(u).toLowerCase() !== me)
+      : [...list, username];
   }
 
   // ====== МУЛЬТИ-ФОТО ПРЕВЬЮ В ФОРМЕ ======
@@ -490,27 +513,29 @@
     }
   }
 
-  async function ghUpdateJson(path, mutator, commitMessage) {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      let sha = null;
-      let current = [];
-      try {
-        const fetched = await ghGetFile(path);
-        sha = fetched.sha;
-        current = fetched.data;
-      } catch (e) {
-        if (!String(e.message).includes("404")) throw e;
+  function ghUpdateJson(path, mutator, commitMessage) {
+    return enqueueGhWrite(async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        let sha = null;
+        let current = [];
+        try {
+          const fetched = await ghGetFile(path);
+          sha = fetched.sha;
+          current = fetched.data;
+        } catch (e) {
+          if (!String(e.message).includes("404")) throw e;
+        }
+        const next = mutator(Array.isArray(current) ? current : []);
+        const b64 = bytesToBase64(new TextEncoder().encode(JSON.stringify(next, null, 2)));
+        try {
+          await ghPutRaw(path, b64, commitMessage, sha);
+          return next;
+        } catch (e) {
+          if (e.status === 409 && attempt < 2) continue;
+          throw e;
+        }
       }
-      const next = mutator(Array.isArray(current) ? current : []);
-      const b64 = bytesToBase64(new TextEncoder().encode(JSON.stringify(next, null, 2)));
-      try {
-        await ghPutRaw(path, b64, commitMessage, sha);
-        return next;
-      } catch (e) {
-        if (e.status === 409 && attempt < 2) continue;
-        throw e;
-      }
-    }
+    });
   }
 
   async function processImageForUpload(file) {
@@ -636,7 +661,11 @@
         const mapById = new Map(posts.map(p => [p.id, p]));
         opt.forEach(item => {
           if (!mapById.has(item.id)) posts.unshift(item);
-          else mapById.get(item.id).comments = item.comments || [];
+          else {
+            const target = mapById.get(item.id);
+            target.comments = item.comments || [];
+            target.likes = item.likes || [];
+          }
         });
       }
     } else {
@@ -780,6 +809,8 @@
         ? `© ${post.quoteAuthor}`
         : `Автор: ${post.author || "Анон"}`;
       const comCount = (post.comments || []).length;
+      const likes = Array.isArray(post.likes) ? post.likes : [];
+      const liked = hasUserLiked(likes);
 
       return `
         <article class="tile ${isCol ? "tile-collection" : ""}" data-post-id="${esc(post.id)}">
@@ -790,7 +821,11 @@
           </div>
           <div class="tile-stats">
             <span class="tile-type-badge">${TYPE_ICONS[post.type] || ""} ${esc(labelForType(post.type))}</span>
-            <span>${comCount > 0 ? `💬 ${comCount} · ` : ""}${formatDate(post.createdAt)}</span>
+            <span class="tile-stats-right">
+              <button type="button" class="tile-like-btn ${liked ? "liked" : ""}" data-like-post="${esc(post.id)}" title="Лайк">${liked ? "♥" : "♡"} ${likes.length}</button>
+              ${comCount > 0 ? `<span>💬 ${comCount}</span>` : ""}
+              <span>${formatDate(post.createdAt)}</span>
+            </span>
           </div>
         </article>
       `;
@@ -801,11 +836,140 @@
     return { thoughts: "Мысль", quotes: "Цитата", video: "Видео", books: "Книга", photos: "Фото" }[type] || type;
   }
 
+  // ====== ЛАЙКИ ПОСТОВ И КОММЕНТАРИЕВ ======
+  function syncPostLikeUI(post) {
+    const likes = Array.isArray(post.likes) ? post.likes : [];
+    const liked = hasUserLiked(likes);
+
+    // Обновляем карточку в сетке без перезагрузки картинок
+    document.querySelectorAll(`[data-like-post="${CSS.escape(post.id)}"]`).forEach(btn => {
+      btn.classList.toggle("liked", liked);
+      btn.innerHTML = `${liked ? "♥" : "♡"} ${likes.length}`;
+    });
+
+    // Обновляем кнопку внутри открытой модалки поста
+    if (state.activeModalPostId === post.id) {
+      renderPostLikeBar(post);
+    }
+  }
+
+  function renderPostLikeBar(post) {
+    const wrap = document.getElementById("view-post-like-wrap");
+    if (!wrap) return;
+    const likes = Array.isArray(post.likes) ? post.likes : [];
+    const liked = hasUserLiked(likes);
+
+    wrap.innerHTML = `
+      <div class="post-like-bar">
+        <button type="button" id="modal-like-post-btn" class="post-like-btn ${liked ? "liked" : ""}">
+          ${liked ? "♥" : "♡"} Нравится · ${likes.length}
+        </button>
+        ${likes.length ? `<span class="post-liked-by">Оценили: ${likes.map(u => esc(u)).join(", ")}</span>` : ""}
+      </div>
+    `;
+
+    document.getElementById("modal-like-post-btn").onclick = () => togglePostLike(post.id);
+  }
+
+  async function togglePostLike(postId) {
+    if (!state.currentUser) {
+      closeModal("modal-view");
+      syncAuthModalFields();
+      openModal("modal-auth");
+      return;
+    }
+    if (!ensureTokenInteractive()) return;
+
+    const post = state.posts.find(p => p.id === postId);
+    if (!post) return;
+
+    const prevLikes = [...(post.likes || [])];
+    post.likes = toggleUserInLikes(prevLikes, state.currentUser.username);
+    syncPostLikeUI(post);
+
+    try {
+      if (IS_GITHUB_READY) {
+        const username = state.currentUser.username;
+        const freshList = await ghUpdateJson(
+          "data/posts.json",
+          list => list.map(p => p.id === postId
+            ? { ...p, likes: toggleUserInLikes(p.likes, username) }
+            : p
+          ),
+          `Toggle like on ${postId}`
+        );
+        const freshPost = freshList.find(p => p.id === postId);
+        if (freshPost) {
+          post.likes = freshPost.likes || [];
+          saveOptimisticPost(freshPost);
+        }
+      } else {
+        localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(state.posts));
+      }
+      syncPostLikeUI(post);
+    } catch (err) {
+      post.likes = prevLikes;
+      syncPostLikeUI(post);
+      alert("Не вышло поставить лайк: " + err.message);
+    }
+  }
+
+  async function toggleCommentLike(postId, commentId) {
+    if (!state.currentUser) {
+      closeModal("modal-view");
+      syncAuthModalFields();
+      openModal("modal-auth");
+      return;
+    }
+    if (!ensureTokenInteractive()) return;
+
+    const post = state.posts.find(p => p.id === postId);
+    const comment = post && (post.comments || []).find(c => c.id === commentId);
+    if (!post || !comment) return;
+
+    const prevLikes = [...(comment.likes || [])];
+    comment.likes = toggleUserInLikes(prevLikes, state.currentUser.username);
+    renderCommentsSection(post);
+
+    try {
+      if (IS_GITHUB_READY) {
+        const username = state.currentUser.username;
+        const freshList = await ghUpdateJson(
+          "data/posts.json",
+          list => list.map(p => p.id === postId
+            ? {
+                ...p,
+                comments: (p.comments || []).map(c => c.id === commentId
+                  ? { ...c, likes: toggleUserInLikes(c.likes, username) }
+                  : c
+                )
+              }
+            : p
+          ),
+          `Toggle comment like on ${postId}`
+        );
+        const freshPost = freshList.find(p => p.id === postId);
+        if (freshPost) {
+          post.comments = freshPost.comments || [];
+          saveOptimisticPost(freshPost);
+        }
+      } else {
+        localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(state.posts));
+      }
+      renderCommentsSection(post);
+    } catch (err) {
+      comment.likes = prevLikes;
+      renderCommentsSection(post);
+      alert("Не вышло поставить лайк на коммент: " + err.message);
+    }
+  }
+
   // ====== ПРОСМОТР ПОСТА И ДРЕВОВИДНЫЕ КОММЕНТАРИИ ======
   function openPostModal(postId) {
     const post = state.posts.find(p => p.id === postId);
     if (!post) return;
 
+    state.activeModalPostId = postId;
     state.carouselMove = null;
     state.replyToComment = null;
     const titleEl = document.getElementById("view-modal-title");
@@ -813,6 +977,8 @@
     titleEl.textContent = post.title;
 
     let mainHtml = "";
+    const tailHtml = `<div id="view-post-like-wrap"></div>` + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
+
     if (post.type === "books") {
       const pages = (post.text || "").split(/\n\s*---\s*\n/).map(s => s.trim()).filter(Boolean);
       if (!pages.length) pages.push("Пустая страница...");
@@ -844,7 +1010,7 @@
           </div>
         </div>`;
 
-      bodyEl.innerHTML = mainHtml + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
+      bodyEl.innerHTML = mainHtml + tailHtml;
 
       const renderPage = () => {
         document.getElementById("br-content").textContent = pages[pageIdx];
@@ -880,7 +1046,7 @@
           ${one ? `<div class="detail-media"><img src="${esc(one.src)}" alt="${esc(post.title)}" ${one.fallback ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(one.fallback)}';}"` : ""}></div>` : ""}
           ${post.text ? `<div class="detail-thought-box">${esc(post.text)}</div>` : ""}
         `;
-        bodyEl.innerHTML = mainHtml + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
+        bodyEl.innerHTML = mainHtml + tailHtml;
       } else {
         mainHtml = `
           <div class="carousel-wrap">
@@ -900,7 +1066,7 @@
           </div>
           ${post.text ? `<div class="detail-thought-box">${esc(post.text)}</div>` : ""}
         `;
-        bodyEl.innerHTML = mainHtml + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
+        bodyEl.innerHTML = mainHtml + tailHtml;
 
         let cur = 0;
         const mainImg = document.getElementById("car-main-img");
@@ -950,22 +1116,23 @@
       } else if (vSrc) {
         mediaEl = `<div class="detail-media"><video src="${esc(vSrc)}" controls playsinline ${fb ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(fb)}';}"` : ""}></video></div>`;
       }
-      bodyEl.innerHTML = `${mediaEl}${post.text ? `<div class="detail-thought-box">${esc(post.text)}</div>` : ""}` + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
+      bodyEl.innerHTML = `${mediaEl}${post.text ? `<div class="detail-thought-box">${esc(post.text)}</div>` : ""}` + tailHtml;
     } else if (post.type === "quotes") {
       mainHtml = `
         <div class="detail-quote-box">
           «${esc(post.text)}»
           ${post.quoteAuthor ? `<div class="detail-quote-author">— ${esc(post.quoteAuthor)}</div>` : ""}
         </div>`;
-      bodyEl.innerHTML = mainHtml + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
+      bodyEl.innerHTML = mainHtml + tailHtml;
     } else {
       mainHtml = `<div class="detail-thought-box">${esc(post.text)}</div>`;
-      bodyEl.innerHTML = mainHtml + buildMetaTable(post) + `<div id="view-comments-wrap"></div>`;
+      bodyEl.innerHTML = mainHtml + tailHtml;
     }
 
     const delBtn = document.getElementById("view-delete-btn");
     if (delBtn) delBtn.onclick = () => deletePost(post.id);
 
+    renderPostLikeBar(post);
     renderCommentsSection(post);
     openModal("modal-view");
   }
@@ -1013,12 +1180,15 @@
       state.currentUser.username.toLowerCase() === (node.author || "").toLowerCase()
     );
 
+    const likes = Array.isArray(node.likes) ? node.likes : [];
+    const liked = hasUserLiked(likes);
+    const likedTitle = likes.length ? `Оценили: ${likes.join(", ")}` : "Лайкнуть";
+
     const hasReplies = node.children.length > 0;
     let isExpanded;
     if (state.threadToggles[node.id] !== undefined) {
       isExpanded = state.threadToggles[node.id];
     } else {
-      // До 2-го уровня и <= 3 ответов показываем сразу, глубже или длиннее — свёрнуто
       isExpanded = depth < 2 && node.descCount <= 3;
     }
 
@@ -1059,6 +1229,9 @@
           </div>
           <div class="comment-body">${esc(node.text)}</div>
           <div class="comment-actions">
+            <button type="button" class="comment-like-btn ${liked ? "liked" : ""}" data-like-comment="${esc(node.id)}" title="${esc(likedTitle)}">
+              ${liked ? "♥" : "♡"}${likes.length ? ` ${likes.length}` : ""}
+            </button>
             <button type="button" class="comment-action-btn" data-reply-id="${esc(node.id)}" data-reply-author="${esc(node.author)}">Ответить</button>
             ${hasReplies ? `
               <button type="button" class="comment-action-btn comment-toggle-btn" data-toggle-thread="${esc(node.id)}">
@@ -1094,7 +1267,7 @@
       `
       : `
         <div class="comment-login-prompt">
-          <span>Хочешь комментить или отвечать? Войди в аккаунт!</span>
+          <span>Хочешь лайкать или комментить? Войди в аккаунт!</span>
           <button type="button" id="comment-login-btn" class="btn-secondary">Войти / Рега</button>
         </div>
       `;
@@ -1107,7 +1280,6 @@
       </div>
     `;
 
-    // Новый корневой коммент
     const cForm = document.getElementById("comment-form");
     if (cForm) {
       cForm.onsubmit = async (e) => {
@@ -1119,7 +1291,12 @@
       };
     }
 
-    // Кнопка "Ответить"
+    // Лайк на коммент
+    wrap.querySelectorAll("[data-like-comment]").forEach(btn => {
+      btn.onclick = () => toggleCommentLike(post.id, btn.dataset.likeComment);
+    });
+
+    // Ответ на коммент
     wrap.querySelectorAll("[data-reply-id]").forEach(btn => {
       btn.onclick = () => {
         if (!state.currentUser) {
@@ -1141,7 +1318,6 @@
       };
     });
 
-    // Форма ответа в ветке
     const inlineForm = document.getElementById("inline-reply-form");
     if (inlineForm && state.replyToComment) {
       inlineForm.onsubmit = async (e) => {
@@ -1156,7 +1332,6 @@
       };
     }
 
-    // Развернуть / Свернуть ветку
     wrap.querySelectorAll("[data-toggle-thread]").forEach(btn => {
       btn.onclick = () => {
         const tid = btn.dataset.toggleThread;
@@ -1203,6 +1378,7 @@
       id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       author: state.currentUser.username,
       text,
+      likes: [],
       createdAt: new Date().toISOString()
     };
     if (parentId) {
@@ -1241,7 +1417,6 @@
     const post = state.posts.find(p => p.id === postId);
     const list = post ? (post.comments || []) : [];
 
-    // Собираем сам коммент и всех его потомков
     const toDelete = new Set([commentId]);
     let added = true;
     while (added) {
@@ -1687,6 +1862,7 @@
         author: state.currentUser.username,
         createdAt: new Date().toISOString(),
         tags,
+        likes: [],
         comments: []
       };
       if (type === "quotes" && quoteAuthor) newPost.quoteAuthor = quoteAuthor;
@@ -1779,6 +1955,7 @@
       document.getElementById("view-modal-body").innerHTML = "";
       state.carouselMove = null;
       state.replyToComment = null;
+      state.activeModalPostId = null;
     }
     modal.classList.add("hidden");
   }
@@ -1847,6 +2024,12 @@
     });
 
     document.getElementById("feed-grid").addEventListener("click", (e) => {
+      const likeBtn = e.target.closest("[data-like-post]");
+      if (likeBtn) {
+        e.stopPropagation();
+        togglePostLike(likeBtn.dataset.likePost);
+        return;
+      }
       const card = e.target.closest(".tile");
       if (card) openPostModal(card.dataset.postId);
     });
