@@ -1,5 +1,27 @@
 [
   {
+    "id": "post-1794912845039-cvwy",
+    "type": "photos",
+    "title": "Великое Творчество Хентайское",
+    "text": "Однажды, мне было очень скучно на паре и я открыл в себе один интересный талант...",
+    "author": "Dr.Hentai",
+    "createdAt": "2026-11-17T10:54:18.134Z",
+    "tags": [
+      "Dr.Hentai",
+      "Фуррьки",
+      "Великое Творчество Хентайское"
+    ],
+    "likes": [],
+    "comments": [],
+    "mediaUrl": "./uploads/post-1794912845039-cvwy_0.webp",
+    "mediaUrls": [
+      "./uploads/post-1794912845039-cvwy_0.webp",
+      "./uploads/post-1794912845039-cvwy_1.webp",
+      "./uploads/post-1794912845039-cvwy_2.webp",
+      "./uploads/post-1794912845039-cvwy_3.webp"
+    ]
+  },
+  {
     "id": "post-1794912386846-hzhy",
     "type": "quotes",
     "title": "Дело было на инфе...",
