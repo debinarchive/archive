@@ -33,7 +33,15 @@
     "likes": [
       "Miralys"
     ],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1794991696002-4jw",
+        "author": "Miralys",
+        "text": "маска пиздит. она в кадр не должна помещаться",
+        "likes": [],
+        "createdAt": "2026-11-18T08:48:16.002Z"
+      }
+    ],
     "mediaUrl": "./uploads/post-1794988141389-opjx.mp4",
     "thumbUrl": "./uploads/post-1794988141389-opjx_thumb.jpg"
   },
