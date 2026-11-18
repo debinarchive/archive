@@ -8,7 +8,15 @@
     "createdAt": "2026-11-18T07:52:15.531Z",
     "tags": [],
     "likes": [],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1794991655404-wy4",
+        "author": "Miralys",
+        "text": "самый пиздатый эдит Дебина!",
+        "likes": [],
+        "createdAt": "2026-11-18T08:47:35.404Z"
+      }
+    ],
     "mediaUrl": "./uploads/post-1794988272604-g19l.mp4",
     "thumbUrl": "./uploads/post-1794988272604-g19l_thumb.jpg"
   },
