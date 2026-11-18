@@ -31,6 +31,7 @@
   let state = {
     posts: [],
     users: [],
+    tgStatus: {},
     currentTab: "all",
     searchQuery: "",
     authMode: "login",
@@ -41,7 +42,8 @@
     replyToComment: null,
     threadToggles: {},
     activeModalPostId: null,
-    pushedPostHistory: false
+    pushedPostHistory: false,
+    pendingTgCode: ""
   };
 
   let ghWriteQueue = Promise.resolve();
@@ -170,7 +172,7 @@
     }
   }
 
-  // ====== УТИЛИТЫ И ССЫЛКИ НА ПОСТЫ ======
+  // ====== УТИЛИТЫ И ССЫЛКИ НА ПОСТЫ / КОММЕНТЫ ======
   function esc(str) {
     return String(str ?? "")
       .replace(/&/g, "&amp;")
@@ -194,6 +196,17 @@
     const hp = new URLSearchParams(hash);
     if (hp.get("post")) return hp.get("post");
     const m = hash.match(/(?:^|&)post=([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : "";
+  }
+
+  function getCommentIdFromUrl() {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("comment")) return q.get("comment");
+    const hash = window.location.hash.replace(/^#/, "");
+    if (!hash) return "";
+    const hp = new URLSearchParams(hash);
+    if (hp.get("comment")) return hp.get("comment");
+    const m = hash.match(/(?:^|&)comment=([^&]+)/);
     return m ? decodeURIComponent(m[1]) : "";
   }
 
@@ -529,11 +542,11 @@
     }
   }
 
-  function ghUpdateJson(path, mutator, commitMessage) {
+  function ghUpdateJson(path, mutator, commitMessage, defaultVal = []) {
     return enqueueGhWrite(async () => {
       for (let attempt = 0; attempt < 3; attempt++) {
         let sha = null;
-        let current = [];
+        let current = defaultVal;
         try {
           const fetched = await ghGetFile(path);
           sha = fetched.sha;
@@ -541,7 +554,7 @@
         } catch (e) {
           if (!String(e.message).includes("404")) throw e;
         }
-        const next = mutator(Array.isArray(current) ? current : []);
+        const next = mutator(current);
         const b64 = bytesToBase64(new TextEncoder().encode(JSON.stringify(next, null, 2)));
         try {
           await ghPutRaw(path, b64, commitMessage, sha);
@@ -650,24 +663,29 @@
   async function loadData() {
     let posts = [];
     let users = [];
+    let tgStatus = {};
 
     if (IS_GITHUB_READY) {
       let usedStaticFallback = false;
       try {
-        const [pRes, uRes] = await Promise.all([
+        const [pRes, uRes, tRes] = await Promise.all([
           ghGetFile("data/posts.json"),
-          ghGetFile("data/users.json").catch(() => ({ data: [] }))
+          ghGetFile("data/users.json").catch(() => ({ data: [] })),
+          ghGetFile("data/tg_status.json").catch(() => ({ data: {} }))
         ]);
         posts = pRes.data;
         users = uRes.data;
+        tgStatus = tRes.data || {};
       } catch {
         usedStaticFallback = true;
-        const [pLoc, uLoc] = await Promise.all([
+        const [pLoc, uLoc, tLoc] = await Promise.all([
           fetch(`./data/posts.json?t=${Date.now()}`).then(r => r.json()).catch(() => []),
-          fetch(`./data/users.json?t=${Date.now()}`).then(r => r.json()).catch(() => [])
+          fetch(`./data/users.json?t=${Date.now()}`).then(r => r.json()).catch(() => []),
+          fetch(`./data/tg_status.json?t=${Date.now()}`).then(r => r.json()).catch(() => ({}))
         ]);
         posts = pLoc;
         users = uLoc;
+        tgStatus = tLoc || {};
       }
 
       if (usedStaticFallback) {
@@ -696,6 +714,7 @@
 
     state.posts = Array.isArray(posts) ? posts : [];
     state.users = Array.isArray(users) ? users : [];
+    state.tgStatus = (tgStatus && typeof tgStatus === "object") ? tgStatus : {};
   }
 
   function getFallbackSamplePosts() {
@@ -997,7 +1016,7 @@
   }
 
   // ====== ПРОСМОТР ПОСТА И ДРЕВОВИДНЫЕ КОММЕНТАРИИ ======
-  function openPostModal(postId, fromHistory = false) {
+  function openPostModal(postId, fromHistory = false, focusCommentId = null) {
     const post = state.posts.find(p => p.id === postId);
     if (!post) return;
 
@@ -1176,9 +1195,26 @@
     const delBtn = document.getElementById("view-delete-btn");
     if (delBtn) delBtn.onclick = () => deletePost(post.id);
 
+    if (focusCommentId && Array.isArray(post.comments)) {
+      expandAncestorsFor(post.comments, focusCommentId);
+    }
+
     renderPostLikeBar(post);
     renderCommentsSection(post);
     openModal("modal-view");
+
+    if (focusCommentId) {
+      setTimeout(() => {
+        const el = document.querySelector(`.comment-item[data-comment-id="${CSS.escape(focusCommentId)}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("comment-highlight");
+          setTimeout(() => {
+            if (document.body.contains(el)) el.classList.remove("comment-highlight");
+          }, 3500);
+        }
+      }, 120);
+    }
   }
 
   function buildCommentTree(comments) {
@@ -1259,7 +1295,7 @@
 
     return `
       <div class="comment-node">
-        <div class="comment-item">
+        <div class="comment-item" data-comment-id="${esc(node.id)}">
           <div class="comment-head">
             <div>
               <span class="comment-author">${esc(node.author)}</span>
@@ -1397,9 +1433,9 @@
     });
   }
 
-  function expandAncestorsFor(comments, startParentId) {
+  function expandAncestorsFor(comments, startId) {
     const byId = new Map((comments || []).map(c => [c.id, c]));
-    let cur = startParentId;
+    let cur = startId;
     const guard = new Set();
     while (cur && !guard.has(cur)) {
       guard.add(cur);
@@ -1575,7 +1611,7 @@
     }
   }
 
-  // ====== ПРОФИЛЬ И СМЕНА НИКНЕЙМА ======
+  // ====== ПРОФИЛЬ, СМЕНА НИКА И ПРИВЯЗКА TELEGRAM ======
   function renameUserInPosts(postsList, oldLower, newName) {
     const swapName = (val) => (String(val || "").toLowerCase() === oldLower ? newName : val);
     const swapArr = (arr) => (Array.isArray(arr) ? arr.map(swapName) : arr);
@@ -1619,10 +1655,47 @@
     return modal;
   }
 
-  function openProfileModal() {
+  function renderProfileBody() {
     if (!state.currentUser) return;
-    ensureProfileModal();
     const body = document.getElementById("profile-modal-body");
+    if (!body) return;
+
+    const myLower = state.currentUser.username.toLowerCase();
+    const isLinked = Boolean(state.tgStatus && state.tgStatus[myLower]);
+    const botUser = (CFG.TG_BOT_USERNAME || "debinpost_bot").replace(/^@/, "");
+
+    if (!state.pendingTgCode) {
+      state.pendingTgCode = "D" + (Math.random().toString(36) + "0000000").slice(2, 9).toUpperCase();
+    }
+
+    const tgBlock = IS_GITHUB_READY ? (
+      isLinked
+        ? `
+          <div class="tg-link-box tg-linked">
+            <div><strong>Почта Дебина (Telegram):</strong> ✅ Привязано</div>
+            <div class="muted-note" style="margin:0.4rem 0 0.8rem;">
+              Личные уведомления о постах, лайках и ответах идут к тебе в @${esc(botUser)}.
+            </div>
+            <button type="button" id="tg-unlink-btn" class="btn-secondary full-btn">Отвязать Telegram</button>
+            <div id="tg-link-msg" class="form-status hidden" style="margin-top:0.8rem;"></div>
+          </div>
+        `
+        : `
+          <div class="tg-link-box">
+            <div><strong>Почта Дебина (Telegram):</strong> не привязана</div>
+            <div class="muted-note" style="margin:0.4rem 0 0.9rem;">
+              Привяжи бота — никто другой не сможет занять твой ник. Уведомления будут приходить только в личку.
+            </div>
+            <a href="https://t.me/${esc(botUser)}?start=${esc(state.pendingTgCode)}" target="_blank" rel="noopener" class="btn-secondary full-btn" style="display:block;text-align:center;text-decoration:none;margin-bottom:0.8rem;">
+              1. Открыть @${esc(botUser)} и нажать START
+            </a>
+            <button type="button" id="tg-confirm-btn" class="btn-primary full-btn">
+              2. Я нажал(а) START — привязать
+            </button>
+            <div id="tg-link-msg" class="form-status hidden" style="margin-top:0.8rem;"></div>
+          </div>
+        `
+    ) : "";
 
     const renameSection = state.currentUser.isCreator
       ? `<p class="muted-note">Создатель <strong>Miralys</strong> — имя неприкасаемое, менять нельзя.</p>`
@@ -1639,18 +1712,106 @@
       `;
 
     body.innerHTML = `
-      <div class="user-row ${state.currentUser.isCreator ? "creator-row" : ""}" style="margin-bottom:1.4rem;">
+      <div class="user-row ${state.currentUser.isCreator ? "creator-row" : ""}" style="margin-bottom:1.2rem;">
         <div>
           <strong>${esc(state.currentUser.username)}</strong>
           <div class="muted-note" style="margin:0;">Текущий профиль</div>
         </div>
         <span class="${state.currentUser.isCreator ? "badge-creator" : "badge-member"}">${state.currentUser.isCreator ? "Создатель" : "Участник"}</span>
       </div>
+      ${tgBlock}
       ${renameSection}
       <div style="border-top:1px solid #eee;padding-top:1.2rem;">
         <button type="button" id="profile-logout-btn" class="btn-danger full-btn">Выйти из аккаунта</button>
       </div>
     `;
+
+    const confirmBtn = document.getElementById("tg-confirm-btn");
+    if (confirmBtn) {
+      confirmBtn.onclick = async () => {
+        if (!ensureTokenInteractive()) return;
+        const msgEl = document.getElementById("tg-link-msg");
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = "Отправляем запрос...";
+        try {
+          await ghUpdateJson(
+            "data/tg_requests.json",
+            list => [
+              ...(Array.isArray(list) ? list : []),
+              {
+                id: `req-${Date.now()}`,
+                action: "link",
+                username: state.currentUser.username,
+                code: state.pendingTgCode,
+                createdAt: new Date().toISOString()
+              }
+            ],
+            `TG link request for ${state.currentUser.username}`,
+            []
+          );
+          msgEl.textContent = `Запрос отправлен! В течение ~15 сек @${botUser} напишет тебе в личку для подтверждения.`;
+          msgEl.classList.remove("hidden");
+
+          // Через 12 и 24 сек проверяем обновился ли tg_status.json
+          [12000, 24000].forEach(delay => {
+            setTimeout(async () => {
+              const pModal = document.getElementById("modal-profile");
+              if (!pModal || pModal.classList.contains("hidden")) return;
+              try {
+                const st = await ghGetFile("data/tg_status.json");
+                state.tgStatus = st.data || {};
+                if (state.tgStatus[myLower]) {
+                  state.pendingTgCode = "";
+                  renderProfileBody();
+                }
+              } catch {}
+            }, delay);
+          });
+        } catch (err) {
+          alert("Ошибка привязки: " + err.message);
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = "2. Я нажал(а) START — привязать";
+        }
+      };
+    }
+
+    const unlinkBtn = document.getElementById("tg-unlink-btn");
+    if (unlinkBtn) {
+      unlinkBtn.onclick = async () => {
+        if (!confirm("Отвязать Telegram и выключить личные уведомления?")) return;
+        if (!ensureTokenInteractive()) return;
+        unlinkBtn.disabled = true;
+        unlinkBtn.textContent = "Отвязываем...";
+        try {
+          await ghUpdateJson(
+            "data/tg_requests.json",
+            list => [
+              ...(Array.isArray(list) ? list : []),
+              {
+                id: `req-${Date.now()}`,
+                action: "unlink",
+                username: state.currentUser.username,
+                createdAt: new Date().toISOString()
+              }
+            ],
+            `TG unlink request for ${state.currentUser.username}`,
+            []
+          );
+          delete state.tgStatus[myLower];
+          state.pendingTgCode = "";
+          renderProfileBody();
+          const msgEl = document.getElementById("tg-link-msg");
+          if (msgEl) {
+            msgEl.textContent = "Telegram отвязан! Бот скоро попрощается с тобой в личке.";
+            msgEl.classList.remove("hidden");
+          }
+        } catch (err) {
+          alert("Ошибка отвязки: " + err.message);
+          unlinkBtn.disabled = false;
+          unlinkBtn.textContent = "Отвязать Telegram";
+        }
+      };
+    }
 
     const renameForm = document.getElementById("profile-rename-form");
     if (renameForm) {
@@ -1662,12 +1823,28 @@
 
     document.getElementById("profile-logout-btn").onclick = () => {
       state.currentUser = null;
+      state.pendingTgCode = "";
       localStorage.removeItem(LS_SESSION);
       updateAuthUI();
       closeModal("modal-profile");
     };
+  }
 
+  function openProfileModal() {
+    if (!state.currentUser) return;
+    ensureProfileModal();
+    renderProfileBody();
     openModal("modal-profile");
+
+    if (IS_GITHUB_READY) {
+      ghGetFile("data/tg_status.json").then(res => {
+        state.tgStatus = res.data || {};
+        const pModal = document.getElementById("modal-profile");
+        if (pModal && !pModal.classList.contains("hidden")) {
+          renderProfileBody();
+        }
+      }).catch(() => {});
+    }
   }
 
   async function handleRenameNickname() {
@@ -1717,6 +1894,26 @@
           list => renameUserInPosts(list, oldLower, newName),
           `Update author ${oldName} -> ${newName}`
         );
+
+        if (state.tgStatus && state.tgStatus[oldLower]) {
+          await ghUpdateJson(
+            "data/tg_requests.json",
+            list => [
+              ...(Array.isArray(list) ? list : []),
+              {
+                id: `req-${Date.now()}`,
+                action: "rename",
+                username: oldName,
+                newUsername: newName,
+                createdAt: new Date().toISOString()
+              }
+            ],
+            `Rename user ${oldName} -> ${newName}`,
+            []
+          );
+          delete state.tgStatus[oldLower];
+          state.tgStatus[newLower] = true;
+        }
 
         const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]");
         localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(renameUserInPosts(opt, oldLower, newName)));
@@ -2219,9 +2416,10 @@
     renderFeed();
 
     const initialPostId = getPostIdFromUrl();
+    const initialCommentId = getCommentIdFromUrl();
     if (initialPostId) {
       if (state.posts.some(p => p.id === initialPostId)) {
-        openPostModal(initialPostId, true);
+        openPostModal(initialPostId, true, initialCommentId);
       } else {
         history.replaceState(null, "", window.location.pathname + window.location.search);
       }
@@ -2229,9 +2427,10 @@
 
     window.addEventListener("popstate", () => {
       const pid = getPostIdFromUrl();
+      const cid = getCommentIdFromUrl();
       const viewModal = document.getElementById("modal-view");
       if (pid) {
-        if (state.activeModalPostId !== pid) openPostModal(pid, true);
+        if (state.activeModalPostId !== pid) openPostModal(pid, true, cid);
       } else if (viewModal && !viewModal.classList.contains("hidden")) {
         closeModal("modal-view", true);
       }

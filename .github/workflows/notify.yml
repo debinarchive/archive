@@ -1,0 +1,353 @@
+name: DebinPost Personal Notifications
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "data/posts.json"
+      - "data/users.json"
+      - "data/tg_requests.json"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tg-notify
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Process Telegram linking and notifications
+        env:
+          TG_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          BEFORE_SHA: ${{ github.event.before }}
+          SITE_URL: "https://debinarchive.github.io/archive/"
+        run: |
+          python3 - << 'EOF'
+          import os, json, html, time, base64, hashlib, subprocess, urllib.request
+          from urllib.parse import quote
+
+          token = os.environ.get("TG_TOKEN", "").strip()
+          before = os.environ.get("BEFORE_SHA", "").strip()
+          site_url = os.environ.get("SITE_URL", "").strip()
+
+          if not token:
+              print("TG_BOT_TOKEN not set")
+              raise SystemExit(0)
+
+          ENC_KEY = hashlib.sha256(b"DEBIN_TG_MAP:" + token.encode("utf-8")).digest()
+
+          def encrypt_chat_id(chat_id: int) -> str:
+              salt = os.urandom(8)
+              pt = ("CHAT:" + str(chat_id)).encode("utf-8")
+              key = hashlib.sha256(ENC_KEY + salt).digest()
+              pad = bytearray()
+              c = 0
+              while len(pad) < len(pt):
+                  pad.extend(hashlib.sha256(key + c.to_bytes(4, "big")).digest())
+                  c += 1
+              ct = bytes(p ^ pad[i] for i, p in enumerate(pt))
+              return base64.b64encode(salt + ct).decode("ascii")
+
+          def decrypt_chat_id(b64_str: str):
+              try:
+                  raw = base64.b64decode(b64_str)
+                  salt, ct = raw[:8], raw[8:]
+                  key = hashlib.sha256(ENC_KEY + salt).digest()
+                  pad = bytearray()
+                  c = 0
+                  while len(pad) < len(ct):
+                      pad.extend(hashlib.sha256(key + c.to_bytes(4, "big")).digest())
+                      c += 1
+                  pt = bytes(ct[i] ^ pad[i] for i in range(len(ct))).decode("utf-8")
+                  if pt.startswith("CHAT:"):
+                      return int(pt[5:])
+              except Exception:
+                  pass
+              return None
+
+          def tg_api(method, payload=None):
+              url = f"https://api.telegram.org/bot{token}/{method}"
+              data = json.dumps(payload).encode("utf-8") if payload is not None else None
+              headers = {"Content-Type": "application/json"} if data else {}
+              req = urllib.request.Request(url, data=data, headers=headers)
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  return json.loads(r.read().decode("utf-8"))
+
+          def send_tg(chat_id, text_html):
+              try:
+                  tg_api("sendMessage", {
+                      "chat_id": chat_id,
+                      "text": text_html,
+                      "parse_mode": "HTML",
+                      "disable_web_page_preview": True
+                  })
+              except Exception as e:
+                  print(f"Send failed for {chat_id}: {e}")
+
+          def get_recent_updates():
+              try:
+                  res = tg_api("getUpdates?limit=100")
+                  updates = res.get("result", [])
+                  now = time.time()
+                  old_ids = [
+                      u["update_id"] for u in updates
+                      if (u.get("message", {}).get("date") or now) < now - 3600
+                  ]
+                  if len(updates) >= 85 and not old_ids:
+                      old_ids = [u["update_id"] for u in updates[:40]]
+                  if old_ids:
+                      tg_api(f"getUpdates?offset={max(old_ids) + 1}&limit=100")
+                  return updates
+              except Exception as e:
+                  print("getUpdates error:", e)
+                  return []
+
+          def load_json_file(path, default):
+              try:
+                  with open(path, "r", encoding="utf-8") as f:
+                      return json.load(f)
+              except Exception:
+                  return default
+
+          def load_json_at(rev, path, default):
+              try:
+                  raw = subprocess.check_output(["git", "show", f"{rev}:{path}"], stderr=subprocess.DEVNULL)
+                  return json.loads(raw.decode("utf-8"))
+              except Exception:
+                  return default
+
+          def clip(s, limit=150):
+              s = " ".join((s or "").split())
+              return (s[:limit] + "...") if len(s) > limit else s
+
+          # ====== 1. ОБРАБОТКА ПРИВЯЗОК / ОТВЯЗОК TELEGRAM ======
+          tg_links = load_json_file("data/tg_links.json", {})
+          tg_status = load_json_file("data/tg_status.json", {})
+          tg_requests = load_json_file("data/tg_requests.json", [])
+          links_changed = False
+
+          if isinstance(tg_requests, list) and tg_requests:
+              has_link_req = any(isinstance(r, dict) and r.get("action") == "link" for r in tg_requests)
+              code_to_chat = {}
+
+              def scan_codes():
+                  updates = get_recent_updates()
+                  for u in updates:
+                      msg = u.get("message") or {}
+                      chat = msg.get("chat") or {}
+                      if chat.get("type") != "private":
+                          continue
+                      txt = (msg.get("text") or "").strip()
+                      parts = txt.split()
+                      c = ""
+                      if len(parts) >= 2 and parts[0].lower().startswith("/start"):
+                          c = parts[1].strip()
+                      elif len(parts) == 1 and parts[0].startswith("D") and len(parts[0]) >= 6:
+                          c = parts[0].strip()
+                      if c:
+                          code_to_chat[c] = chat["id"]
+
+              if has_link_req:
+                  scan_codes()
+                  needed_missing = any(
+                      r.get("action") == "link" and r.get("code") not in code_to_chat
+                      for r in tg_requests if isinstance(r, dict)
+                  )
+                  if needed_missing:
+                      time.sleep(5)
+                      scan_codes()
+
+              for req in tg_requests:
+                  if not isinstance(req, dict):
+                      continue
+                  act = req.get("action")
+                  uname = str(req.get("username") or "").strip()
+                  ul = uname.lower()
+                  if not ul:
+                      continue
+
+                  if act == "link":
+                      code = str(req.get("code") or "").strip()
+                      cid = code_to_chat.get(code)
+                      if ul in tg_links:
+                          if cid:
+                              send_tg(cid, f"❌ Аккаунт «<b>{html.escape(uname)}</b>» уже привязан к другому Telegram. Сначала отвяжи его на сайте.")
+                      elif cid:
+                          tg_links[ul] = encrypt_chat_id(cid)
+                          tg_status[ul] = True
+                          links_changed = True
+                          send_tg(
+                              cid,
+                              f"✅ <b>Почта Дебина подключена!</b>\n"
+                              f"Аккаунт «<b>{html.escape(uname)}</b>» привязан к этому Telegram.\n"
+                              f"Теперь сюда будут приходить личные уведомления о новых постах, лайках и ответах."
+                          )
+                  elif act == "unlink":
+                      if ul in tg_links:
+                          old_cid = decrypt_chat_id(tg_links[ul])
+                          del tg_links[ul]
+                          tg_status.pop(ul, None)
+                          links_changed = True
+                          if old_cid:
+                              send_tg(old_cid, f"🔕 <b>Почта Дебина отключена</b>\nАккаунт «<b>{html.escape(uname)}</b>» отвязан от уведомлений.")
+                  elif act == "rename":
+                      new_u = str(req.get("newUsername") or "").strip()
+                      new_l = new_u.lower()
+                      if ul in tg_links and new_l and new_l != ul:
+                          tg_links[new_l] = tg_links.pop(ul)
+                          tg_status.pop(ul, None)
+                          tg_status[new_l] = True
+                          links_changed = True
+
+              tg_requests = []
+              links_changed = True
+
+          if links_changed:
+              with open("data/tg_links.json", "w", encoding="utf-8") as f:
+                  json.dump(tg_links, f, indent=2, ensure_ascii=False)
+              with open("data/tg_status.json", "w", encoding="utf-8") as f:
+                  json.dump(tg_status, f, indent=2, ensure_ascii=False)
+              with open("data/tg_requests.json", "w", encoding="utf-8") as f:
+                  json.dump(tg_requests, f, indent=2, ensure_ascii=False)
+
+              subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
+              subprocess.run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], check=True)
+              subprocess.run(["git", "add", "data/tg_links.json", "data/tg_status.json", "data/tg_requests.json"], check=True)
+              diff_chk = subprocess.run(["git", "diff", "--cached", "--quiet"])
+              if diff_chk.returncode != 0:
+                  subprocess.run(["git", "commit", "-m", "Sync Telegram links"], check=True)
+                  subprocess.run(["git", "pull", "--rebase", "origin", "main"], check=True)
+                  subprocess.run(["git", "push", "origin", "main"], check=True)
+
+          # ====== 2. АДРЕСНЫЕ УВЕДОМЛЕНИЯ О ПОСТАХ, ЛАЙКАХ И КОММЕНТАХ ======
+          if not before or set(before) == {"0"} or not tg_links:
+              raise SystemExit(0)
+
+          commit_msg = subprocess.check_output(["git", "log", "-1", "--pretty=%s"]).decode("utf-8", "ignore").strip()
+          if commit_msg.startswith("Rename user ") or commit_msg.startswith("Update author "):
+              print("Rename commit — skip notifications")
+              raise SystemExit(0)
+
+          def send_to_user(uname_lower, text_html):
+              enc = tg_links.get(uname_lower)
+              if not enc:
+                  return
+              cid = decrypt_chat_id(enc)
+              if cid:
+                  send_tg(cid, text_html)
+
+          TYPE_LABELS = {
+              "thoughts": "💭 Мысль",
+              "quotes": "💬 Цитата",
+              "video": "🎬 Видео",
+              "books": "📖 Книга",
+              "photos": "📸 Фото"
+          }
+
+          old_posts = load_json_at(before, "data/posts.json", [])
+          new_posts = load_json_file("data/posts.json", [])
+
+          if old_posts != new_posts:
+              old_by_id = {p["id"]: p for p in old_posts if isinstance(p, dict) and "id" in p}
+              for p in new_posts:
+                  if not isinstance(p, dict) or "id" not in p:
+                      continue
+                  pid = p["id"]
+                  title = html.escape(str(p.get("title") or "Без названия"))
+                  p_author_raw = str(p.get("author") or "Кто-то")
+                  p_author_l = p_author_raw.strip().lower()
+                  p_url = f"{site_url}#post={quote(pid)}"
+
+                  if pid not in old_by_id:
+                      t_label = TYPE_LABELS.get(p.get("type"), "📁 Пост")
+                      msg = (
+                          f"🏛️ <b>{html.escape(p_author_raw)}</b> — новый пост в архиве!\n"
+                          f"{t_label} · «<b>{title}</b>»\n\n"
+                          f"👉 <a href=\"{p_url}\">Посмотреть пост</a>"
+                      )
+                      for target_l in list(tg_links.keys()):
+                          if target_l != p_author_l:
+                              send_to_user(target_l, msg)
+                  else:
+                      old_p = old_by_id[pid]
+                      # Лайки на пост
+                      old_plikes = {str(u).strip().lower() for u in (old_p.get("likes") or [])}
+                      for u in (p.get("likes") or []):
+                          ul = str(u).strip().lower()
+                          if ul and ul not in old_plikes and p_author_l and ul != p_author_l:
+                              send_to_user(
+                                  p_author_l,
+                                  f"❤️ <b>{html.escape(str(u))}</b>: понравился ваш пост «<b>{title}</b>»\n\n"
+                                  f"👉 <a href=\"{p_url}\">Посмотреть пост</a>"
+                              )
+
+                      # Новые комменты, ответы и лайки на комменты
+                      old_c_by_id = {
+                          c.get("id"): c for c in (old_p.get("comments") or [])
+                          if isinstance(c, dict) and c.get("id")
+                      }
+                      for c in (p.get("comments") or []):
+                          if not isinstance(c, dict) or not c.get("id"):
+                              continue
+                          cid = c["id"]
+                          c_author_raw = str(c.get("author") or "Кто-то")
+                          c_author_l = c_author_raw.strip().lower()
+                          c_url = f"{site_url}#post={quote(pid)}&comment={quote(cid)}"
+
+                          if cid not in old_c_by_id:
+                              snippet = html.escape(clip(c.get("text", ""), 150))
+                              reply_raw = str(c.get("replyTo") or "")
+                              reply_l = reply_raw.strip().lower()
+                              notified = set()
+
+                              if reply_l and reply_l != c_author_l:
+                                  send_to_user(
+                                      reply_l,
+                                      f"↩️ <b>{html.escape(c_author_raw)}</b> ответил(а) на ваш комментарий под постом «<b>{title}</b>»:\n"
+                                      f"<i>«{snippet}»</i>\n\n"
+                                      f"👉 <a href=\"{c_url}\">Посмотреть ответ</a>"
+                                  )
+                                  notified.add(reply_l)
+
+                              if p_author_l and p_author_l != c_author_l and p_author_l not in notified:
+                                  send_to_user(
+                                      p_author_l,
+                                      f"💬 <b>{html.escape(c_author_raw)}</b>: новый комментарий к «<b>{title}</b>»:\n"
+                                      f"<i>«{snippet}»</i>\n\n"
+                                      f"👉 <a href=\"{c_url}\">Посмотреть комментарий</a>"
+                                  )
+                          else:
+                              old_c = old_c_by_id[cid]
+                              old_clikes = {str(u).strip().lower() for u in (old_c.get("likes") or [])}
+                              snippet = html.escape(clip(c.get("text", ""), 90))
+                              for u in (c.get("likes") or []):
+                                  ul = str(u).strip().lower()
+                                  if ul and ul not in old_clikes and c_author_l and ul != c_author_l:
+                                      send_to_user(
+                                          c_author_l,
+                                          f"❤️ <b>{html.escape(str(u))}</b>: понравился ваш комментарий «<i>{snippet}</i>»\n\n"
+                                          f"👉 <a href=\"{c_url}\">Посмотреть комментарий</a>"
+                                      )
+
+          # Новые регистрации — Создателю Miralys
+          old_users = {u.get("username", "").lower() for u in load_json_at(before, "data/users.json", []) if isinstance(u, dict)}
+          for u in load_json_file("data/users.json", []):
+              if not isinstance(u, dict):
+                  continue
+              uname = u.get("username", "")
+              if uname and uname.lower() not in old_users:
+                  send_to_user(
+                      "miralys",
+                      f"👤 <b>Новый участник в DebinArchive!</b>\n"
+                      f"Зарегистрировался(ась): <b>{html.escape(uname)}</b> 🎉"
+                  )
+          EOF

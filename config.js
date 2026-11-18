@@ -1,4 +1,5 @@
 window.DEBIN_CONFIG = {
+  TG_BOT_USERNAME: "debinpost_bot",
   // Данные вашего репозитория на GitHub:
   // Если ещё не настроил, оставь "YOUR_GITHUB_USERNAME" — включится локальный демо-режим.
   GITHUB: {
