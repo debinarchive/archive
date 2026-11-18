@@ -1,5 +1,25 @@
 [
   {
+    "id": "post-1794987859987-57j4",
+    "type": "photos",
+    "title": "снова Макс",
+    "text": "",
+    "author": "Викииич",
+    "createdAt": "2026-11-18T07:44:36.570Z",
+    "tags": [],
+    "likes": [],
+    "comments": [],
+    "mediaUrl": "./uploads/post-1794987859987-57j4_0.jpg",
+    "mediaUrls": [
+      "./uploads/post-1794987859987-57j4_0.jpg",
+      "./uploads/post-1794987859987-57j4_1.jpg",
+      "./uploads/post-1794987859987-57j4_2.jpg",
+      "./uploads/post-1794987859987-57j4_3.jpg",
+      "./uploads/post-1794987859987-57j4_4.jpg",
+      "./uploads/post-1794987859987-57j4_5.jpg"
+    ]
+  },
+  {
     "id": "post-1794987753265-i8ub",
     "type": "photos",
     "title": "ФИКСИРУЮТ!!!",
