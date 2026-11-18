@@ -1,5 +1,22 @@
 [
   {
+    "id": "post-1794988046073-u70t",
+    "type": "photos",
+    "title": "Фотка с моим фанатом",
+    "text": "ну фанат попросил автограф и совместную фотку",
+    "author": "Викииич",
+    "createdAt": "2026-11-18T07:47:40.728Z",
+    "tags": [],
+    "likes": [],
+    "comments": [],
+    "mediaUrl": "./uploads/post-1794988046073-u70t_0.jpg",
+    "mediaUrls": [
+      "./uploads/post-1794988046073-u70t_0.jpg",
+      "./uploads/post-1794988046073-u70t_1.jpg",
+      "./uploads/post-1794988046073-u70t_2.jpg"
+    ]
+  },
+  {
     "id": "post-1794987859987-57j4",
     "type": "photos",
     "title": "снова Макс",
