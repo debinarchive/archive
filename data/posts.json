@@ -1,5 +1,25 @@
 [
   {
+    "id": "post-1794987619331-n1ui",
+    "type": "photos",
+    "title": "гипермегаультра смешные фотки Макса",
+    "text": "",
+    "author": "Викииич",
+    "createdAt": "2026-11-18T07:41:05.312Z",
+    "tags": [],
+    "likes": [],
+    "comments": [],
+    "mediaUrl": "./uploads/post-1794987619331-n1ui_0.jpg",
+    "mediaUrls": [
+      "./uploads/post-1794987619331-n1ui_0.jpg",
+      "./uploads/post-1794987619331-n1ui_1.jpg",
+      "./uploads/post-1794987619331-n1ui_2.jpg",
+      "./uploads/post-1794987619331-n1ui_3.jpg",
+      "./uploads/post-1794987619331-n1ui_4.jpg",
+      "./uploads/post-1794987619331-n1ui_5.jpg"
+    ]
+  },
+  {
     "id": "post-1794981232415-0f3v",
     "type": "quotes",
     "title": "Тупость галюньская",
