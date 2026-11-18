@@ -32,7 +32,15 @@
     "likes": [
       "Miralys"
     ],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1794984532448-5k0",
+        "author": "Miralys",
+        "text": "пизданул лучше Сократа",
+        "likes": [],
+        "createdAt": "2026-11-18T06:48:52.448Z"
+      }
+    ],
     "quoteAuthor": "Dr.Hentai"
   },
   {
