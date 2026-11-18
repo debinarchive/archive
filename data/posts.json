@@ -172,7 +172,9 @@
         "id": "c-1794993172469-zp0",
         "author": "Викииич",
         "text": "БЛЯТЬ НЕЕЕТ",
-        "likes": [],
+        "likes": [
+          "Miralys"
+        ],
         "createdAt": "2026-11-18T09:12:52.469Z",
         "parentId": "c-1794993103296-39t",
         "replyTo": "Miralys"
