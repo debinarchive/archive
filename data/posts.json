@@ -186,7 +186,15 @@
     "likes": [
       "Miralys"
     ],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1794992969922-mjh",
+        "author": "Miralys",
+        "text": "а потом начали могать друг друга",
+        "likes": [],
+        "createdAt": "2026-11-18T09:09:29.922Z"
+      }
+    ],
     "mediaUrl": "./uploads/post-1794987753265-i8ub_0.jpg",
     "mediaUrls": [
       "./uploads/post-1794987753265-i8ub_0.jpg",
