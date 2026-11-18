@@ -137,7 +137,9 @@
         "id": "c-1794992298437-2qs",
         "author": "Викииич",
         "text": "вся галерея в тебе нафиг",
-        "likes": [],
+        "likes": [
+          "Miralys"
+        ],
         "createdAt": "2026-11-18T08:58:18.437Z",
         "parentId": "c-1794992266424-oq9",
         "replyTo": "Miralys"
