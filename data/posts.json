@@ -10,7 +10,15 @@
     "likes": [
       "Miralys"
     ],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1794992191614-4ub",
+        "author": "Miralys",
+        "text": "ох сука, вот это гигачад, я ебал 😮‍💨",
+        "likes": [],
+        "createdAt": "2026-11-18T08:56:31.614Z"
+      }
+    ],
     "mediaUrl": "./uploads/post-1794991935244-h83g.jpg"
   },
   {
