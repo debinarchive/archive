@@ -83,7 +83,15 @@
     "likes": [
       "Miralys"
     ],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1794992221198-ub8",
+        "author": "Miralys",
+        "text": "Ээ",
+        "likes": [],
+        "createdAt": "2026-11-18T08:57:01.198Z"
+      }
+    ],
     "mediaUrl": "./uploads/post-1794988046073-u70t_0.jpg",
     "mediaUrls": [
       "./uploads/post-1794988046073-u70t_0.jpg",
