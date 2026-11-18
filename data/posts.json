@@ -112,7 +112,15 @@
     "likes": [
       "Miralys"
     ],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1794992266424-oq9",
+        "author": "Miralys",
+        "text": "макс будет всегда",
+        "likes": [],
+        "createdAt": "2026-11-18T08:57:46.425Z"
+      }
+    ],
     "mediaUrl": "./uploads/post-1794987859987-57j4_0.jpg",
     "mediaUrls": [
       "./uploads/post-1794987859987-57j4_0.jpg",
