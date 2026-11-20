@@ -1733,3 +1733,70 @@ body {
   font-family: inherit;
   cursor: pointer;
 }
+
+
+/* === ОНЛАЙН, НЕВИДИМКА И ИНСТРУМЕНТЫ ДЭВА === */
+.status-online {
+  color: #1f9d68;
+  font-weight: 700;
+}
+.status-offline {
+  color: #666666;
+}
+.user-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+.btn-mini {
+  background: #ffffff;
+  border: 1px solid #cccccc;
+  color: #333333;
+  border-radius: 4px;
+  padding: 0.35rem 0.7rem;
+  font-size: 1.15rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-mini:hover {
+  background: #f0f2f5;
+  border-color: #999999;
+}
+.dev-panel-box {
+  background: #f0f4fa;
+  border: 1px solid #bfd0e8;
+  border-radius: 4px;
+  padding: 1rem 1.2rem;
+  margin-bottom: 1.2rem;
+  font-size: 1.3rem;
+}
+.dev-panel-title {
+  font-weight: 700;
+  color: #194880;
+  margin-bottom: 0.7rem;
+}
+.toggle-row {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  font-weight: 500 !important;
+  cursor: pointer;
+  padding: 0.35rem 0;
+}
+.toggle-row input[type="checkbox"] {
+  width: 18px !important;
+  height: 18px;
+  accent-color: #194880;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.dev-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.8rem;
+  margin-top: 1.4rem;
+}

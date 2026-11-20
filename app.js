@@ -35,6 +35,7 @@
     users: [],
     tgStatus: {},
     avatars: {},
+    presence: { users: {}, devPrefs: { showOnline: false, showLastSeen: false } },
     currentTab: "all",
     searchQuery: "",
     sortBy: "newest",
@@ -191,6 +192,17 @@
     const q = new URLSearchParams(window.location.search);
     if (q.has("dev")) return true;
     return /(?:^|[?&#/])dev(?:$|[=&])/i.test(window.location.hash);
+  }
+
+  function isCreatorUser() {
+    return Boolean(state.currentUser && state.currentUser.isCreator && state.currentUser.username.toLowerCase() === "miralys");
+  }
+
+  function toLocalInputValue(iso) {
+    const d = iso ? new Date(iso) : new Date();
+    if (isNaN(d.getTime())) return "";
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
   function getPostIdFromUrl() {
@@ -404,11 +416,12 @@
     });
   }
 
-  async function ghGetFile(path) {
+  async function ghGetFile(path, branchOverride = null) {
+    const branch = branchOverride || GH.branch || "main";
     const headers = { "Accept": "application/vnd.github+json" };
     const token = getUnlockedToken();
     if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(`${apiUrl(path)}?ref=${GH.branch || "main"}&t=${Date.now()}`, {
+    const res = await fetch(`${apiUrl(path)}?ref=${branch}&t=${Date.now()}`, {
       headers,
       cache: "no-store"
     });
@@ -418,10 +431,11 @@
     return { sha: json.sha, data: JSON.parse(content) };
   }
 
-  async function ghPutRaw(path, base64Content, message, sha = null, onProgress = null) {
+  async function ghPutRaw(path, base64Content, message, sha = null, onProgress = null, branchOverride = null) {
     const token = getUnlockedToken();
     if (!token) throw new Error("Не введён братский 0 для доступа к архиву.");
-    const body = { message, content: base64Content, branch: GH.branch || "main" };
+    const branch = branchOverride || GH.branch || "main";
+    const body = { message, content: base64Content, branch };
     if (sha) body.sha = sha;
 
     return xhrRequest(
@@ -547,13 +561,13 @@
     }
   }
 
-  function ghUpdateJson(path, mutator, commitMessage, defaultVal = []) {
+  function ghUpdateJson(path, mutator, commitMessage, defaultVal = [], branchOverride = null) {
     return enqueueGhWrite(async () => {
       for (let attempt = 0; attempt < 3; attempt++) {
         let sha = null;
         let current = defaultVal;
         try {
-          const fetched = await ghGetFile(path);
+          const fetched = await ghGetFile(path, branchOverride);
           sha = fetched.sha;
           current = fetched.data;
         } catch (e) {
@@ -562,7 +576,7 @@
         const next = mutator(current);
         const b64 = bytesToBase64(new TextEncoder().encode(JSON.stringify(next, null, 2)));
         try {
-          await ghPutRaw(path, b64, commitMessage, sha);
+          await ghPutRaw(path, b64, commitMessage, sha, null, branchOverride);
           return next;
         } catch (e) {
           if (e.status === 409 && attempt < 2) continue;
@@ -570,6 +584,92 @@
         }
       }
     });
+  }
+
+  // ====== ОНЛАЙН / ОФФЛАЙН (ВЕТКА presence) ======
+  async function loadPresence() {
+    if (!IS_GITHUB_READY) return;
+    try {
+      const res = await ghGetFile("presence.json", "presence");
+      if (res && res.data && typeof res.data === "object") {
+        state.presence = {
+          users: res.data.users || {},
+          devPrefs: { showOnline: false, showLastSeen: false, ...(res.data.devPrefs || {}) }
+        };
+      }
+    } catch {}
+  }
+
+  async function pingPresence(force = false) {
+    if (!IS_GITHUB_READY || !state.currentUser || !getUnlockedToken()) return;
+    if (!force && document.visibilityState !== "visible") return;
+
+    const lower = state.currentUser.username.toLowerCase();
+    const isMeCreator = isCreatorUser();
+    if (isMeCreator) {
+      await loadPresence();
+      const dp = state.presence.devPrefs || {};
+      if (!dp.showOnline && !dp.showLastSeen) return;
+    }
+
+    const lsKey = `debin_last_ping_${lower}`;
+    const lastPing = Number(localStorage.getItem(lsKey) || 0);
+    if (!force && Date.now() - lastPing < 180000) return;
+
+    localStorage.setItem(lsKey, String(Date.now()));
+    try {
+      state.presence = await ghUpdateJson(
+        "presence.json",
+        (obj) => {
+          const base = (obj && typeof obj === "object") ? obj : {};
+          const users = { ...(base.users || {}) };
+          const dp = { showOnline: false, showLastSeen: false, ...(base.devPrefs || {}) };
+          if (isMeCreator && !dp.showOnline && !dp.showLastSeen) {
+            delete users["miralys"];
+          } else {
+            users[lower] = { lastSeen: Date.now() };
+          }
+          return { users, devPrefs: dp };
+        },
+        `Ping ${lower}`,
+        { users: {}, devPrefs: { showOnline: false, showLastSeen: false } },
+        "presence"
+      );
+    } catch {}
+  }
+
+  function formatPresenceLine(username, fallbackText) {
+    const lower = String(username || "").toLowerCase();
+    const entry = state.presence && state.presence.users && state.presence.users[lower];
+    const ts = entry ? Number(entry.lastSeen || 0) : 0;
+    const isOnline = ts > 0 && (Date.now() - ts < 4 * 60 * 1000);
+
+    if (lower === "miralys") {
+      const dp = (state.presence && state.presence.devPrefs) || {};
+      if (isOnline && dp.showOnline) return `<span class="status-online">🟢 Онлайн</span>`;
+      if (ts > 0 && dp.showLastSeen) return `<span class="status-offline">${formatLastSeenTime(ts)}</span>`;
+      if (isCreatorUser()) {
+        return `<span class="status-offline">${esc(fallbackText)} (скрыт от всех)</span>`;
+      }
+      return `<span class="status-offline">${esc(fallbackText)}</span>`;
+    }
+
+    if (isOnline) return `<span class="status-online">🟢 Онлайн</span>`;
+    if (ts > 0) return `<span class="status-offline">${formatLastSeenTime(ts)}</span>`;
+    return `<span class="status-offline">${esc(fallbackText)}</span>`;
+  }
+
+  function formatLastSeenTime(ts) {
+    const d = new Date(ts);
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const sameDay = d.toDateString() === now.toDateString();
+    const yest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    const isYest = d.toDateString() === yest.toDateString();
+    if (sameDay) return `Был(а) сегодня в ${hm}`;
+    if (isYest) return `Был(а) вчера в ${hm}`;
+    return `Был(а) ${pad(d.getDate())}.${pad(d.getMonth() + 1)} в ${hm}`;
   }
 
   async function processImageForUpload(file) {
@@ -1241,6 +1341,11 @@
     scored.sort((a, b) => {
       if (q && b.tier !== a.tier) return b.tier - a.tier;
       if (q && a.tier === 1 && state.sortBy === "newest" && b.score !== a.score) return b.score - a.score;
+      if (!q && state.sortBy === "newest") {
+        const bf = b.post.featured ? 1 : 0;
+        const af = a.post.featured ? 1 : 0;
+        if (bf !== af) return bf - af;
+      }
       if (state.sortBy === "oldest") return postTs(a.post) - postTs(b.post);
       if (state.sortBy === "likes") {
         const dl = (b.post.likes?.length || 0) - (a.post.likes?.length || 0);
@@ -1654,6 +1759,10 @@
 
     const delBtn = document.getElementById("view-delete-btn");
     if (delBtn) delBtn.onclick = () => deletePost(post.id);
+    const pinBtn = document.getElementById("view-pin-btn");
+    if (pinBtn) pinBtn.onclick = () => togglePinPost(post.id);
+    const editBtn = document.getElementById("view-edit-btn");
+    if (editBtn) editBtn.onclick = () => openEditPostModal(post.id);
 
     if (focusCommentId && Array.isArray(post.comments)) {
       expandAncestorsFor(post.comments, focusCommentId);
@@ -2009,8 +2118,9 @@
   }
 
   function buildMetaTable(post) {
+    const isDev = isCreatorUser();
     const canDelete = state.currentUser && (
-      state.currentUser.isCreator ||
+      isDev ||
       state.currentUser.username.toLowerCase() === (post.author || "").toLowerCase()
     );
     return `
@@ -2020,8 +2130,141 @@
         <tr><td>Дата архивации</td><td>${formatDate(post.createdAt)}</td></tr>
         ${post.tags && post.tags.length ? `<tr><td>Теги</td><td>${post.tags.map(t => `#${esc(t)}`).join(" ")}</td></tr>` : ""}
       </table>
-      ${canDelete ? `<div style="margin-top:1.4rem;text-align:right;"><button id="view-delete-btn" class="btn-danger">Удалить из архива</button></div>` : ""}
+      ${(canDelete || isDev) ? `
+        <div class="dev-actions-row">
+          ${isDev ? `<button type="button" id="view-pin-btn" class="btn-secondary">${post.featured ? "Открепить" : "📌 Закрепить"}</button>` : ""}
+          ${isDev ? `<button type="button" id="view-edit-btn" class="btn-secondary">✏️ Редактировать</button>` : ""}
+          ${canDelete ? `<button type="button" id="view-delete-btn" class="btn-danger">Удалить из архива</button>` : ""}
+        </div>
+      ` : ""}
     `;
+  }
+
+  async function togglePinPost(postId) {
+    if (!isCreatorUser() || !ensureTokenInteractive()) return;
+    const btn = document.getElementById("view-pin-btn");
+    if (btn) btn.disabled = true;
+    try {
+      if (IS_GITHUB_READY) {
+        state.posts = await ghUpdateJson(
+          "data/posts.json",
+          list => list.map(p => p.id === postId ? { ...p, featured: !p.featured } : p),
+          `Update author toggle pin ${postId}`
+        );
+        const up = state.posts.find(p => p.id === postId);
+        if (up) saveOptimisticPost(up);
+      } else {
+        state.posts = state.posts.map(p => p.id === postId ? { ...p, featured: !p.featured } : p);
+        localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(state.posts));
+      }
+      renderFeed();
+      openPostModal(postId, true);
+    } catch (err) {
+      alert("Не вышло закрепить: " + err.message);
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function openEditPostModal(postId) {
+    if (!isCreatorUser()) return;
+    const post = state.posts.find(p => p.id === postId);
+    if (!post) return;
+
+    let modal = document.getElementById("modal-edit-post");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "modal-edit-post";
+      modal.className = "modal-backdrop hidden";
+      modal.style.zIndex = "250";
+      modal.innerHTML = `
+        <div class="modal-box modal-md">
+          <div class="modal-head">
+            <h3>✏️ Редактор поста (Dev)</h3>
+            <button class="modal-close" data-close="modal-edit-post">✕</button>
+          </div>
+          <div class="modal-body" id="edit-post-body"></div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      modal.querySelector("[data-close='modal-edit-post']").addEventListener("click", () => closeModal("modal-edit-post"));
+      modal.addEventListener("click", (e) => { if (e.target === modal) closeModal("modal-edit-post"); });
+    }
+
+    document.getElementById("edit-post-body").innerHTML = `
+      <form id="edit-post-form" class="ia-form">
+        <label>Заголовок<input type="text" id="ep-title" required value="${esc(post.title || "")}"></label>
+        <div class="form-row-2">
+          <label>Автор поста<input type="text" id="ep-author" required value="${esc(post.author || "")}"></label>
+          <label>Дата публикации<input type="datetime-local" id="ep-date" value="${esc(toLocalInputValue(post.createdAt))}"></label>
+        </div>
+        ${post.type === "quotes" ? `<label>Чья цитата<input type="text" id="ep-quote-author" value="${esc(post.quoteAuthor || "")}"></label>` : ""}
+        ${post.type === "books" ? `
+          <div class="form-row-2">
+            <label>Автор книги<input type="text" id="ep-book-author" value="${esc(post.bookAuthor || "")}"></label>
+            <label>Эпоха / год<input type="text" id="ep-book-year" value="${esc(post.bookYear || "")}"></label>
+          </div>` : ""}
+        <label>Текст<textarea id="ep-text" rows="5"></textarea></label>
+        <label>Теги (через запятую)<input type="text" id="ep-tags" value="${esc((post.tags || []).join(", "))}"></label>
+        <div id="ep-err" class="form-error hidden"></div>
+        <button type="submit" id="ep-save-btn" class="btn-primary full-btn">Сохранить изменения</button>
+      </form>
+    `;
+    document.getElementById("ep-text").value = post.text || "";
+
+    document.getElementById("edit-post-form").onsubmit = async (e) => {
+      e.preventDefault();
+      if (!ensureTokenInteractive()) return;
+      const btn = document.getElementById("ep-save-btn");
+      btn.disabled = true;
+      btn.textContent = "Сохраняем...";
+
+      const dateVal = document.getElementById("ep-date").value;
+      let nextIso = post.createdAt;
+      if (dateVal) {
+        const d = new Date(dateVal);
+        if (!isNaN(d.getTime())) nextIso = d.toISOString();
+      }
+
+      const patchObj = {
+        title: document.getElementById("ep-title").value.trim() || post.title,
+        author: document.getElementById("ep-author").value.trim() || post.author,
+        text: document.getElementById("ep-text").value.trim(),
+        tags: document.getElementById("ep-tags").value.split(",").map(s => s.trim()).filter(Boolean),
+        createdAt: nextIso
+      };
+      const qa = document.getElementById("ep-quote-author");
+      if (qa) patchObj.quoteAuthor = qa.value.trim();
+      const ba = document.getElementById("ep-book-author");
+      if (ba) patchObj.bookAuthor = ba.value.trim();
+      const by = document.getElementById("ep-book-year");
+      if (by) patchObj.bookYear = by.value.trim();
+
+      try {
+        if (IS_GITHUB_READY) {
+          state.posts = await ghUpdateJson(
+            "data/posts.json",
+            list => list.map(p => p.id === postId ? { ...p, ...patchObj } : p),
+            `Update author edit post ${postId}`
+          );
+          const up = state.posts.find(p => p.id === postId);
+          if (up) saveOptimisticPost(up);
+        } else {
+          state.posts = state.posts.map(p => p.id === postId ? { ...p, ...patchObj } : p);
+          localStorage.setItem(LS_LOCAL_POSTS, JSON.stringify(state.posts));
+        }
+        closeModal("modal-edit-post");
+        renderFeed();
+        openPostModal(postId, true);
+      } catch (err) {
+        const er = document.getElementById("ep-err");
+        er.textContent = "Ошибка сохранения: " + err.message;
+        er.classList.remove("hidden");
+        btn.disabled = false;
+        btn.textContent = "Сохранить изменения";
+      }
+    };
+
+    openModal("modal-edit-post");
   }
 
   async function deletePost(postId) {
@@ -2158,8 +2401,25 @@
         `
     ) : "";
 
+    const dp = (state.presence && state.presence.devPrefs) || { showOnline: false, showLastSeen: false };
+    const devStealthSection = isCreatorUser()
+      ? `
+        <div class="dev-panel-box">
+          <div class="dev-panel-title">🥷 Невидимка Создателя</div>
+          <label class="toggle-row">
+            <span>Показывать, что я онлайн</span>
+            <input type="checkbox" id="dev-toggle-online" ${dp.showOnline ? "checked" : ""}>
+          </label>
+          <label class="toggle-row">
+            <span>Показывать, когда был в сети</span>
+            <input type="checkbox" id="dev-toggle-lastseen" ${dp.showLastSeen ? "checked" : ""}>
+          </label>
+        </div>
+      `
+      : "";
+
     const renameSection = state.currentUser.isCreator
-      ? `<p class="muted-note">Создатель <strong>Miralys</strong> — имя неприкасаемое, менять нельзя.</p>`
+      ? `${devStealthSection}<p class="muted-note">Создатель <strong>Miralys</strong> — имя неприкасаемое, менять нельзя.</p>`
       : `
         <form id="profile-rename-form" class="ia-form" style="margin-bottom:1.4rem;">
           <label>
@@ -2368,6 +2628,36 @@
       };
     }
 
+    const togOn = document.getElementById("dev-toggle-online");
+    const togLs = document.getElementById("dev-toggle-lastseen");
+    const saveDevStealth = async () => {
+      if (!isCreatorUser() || !IS_GITHUB_READY || !ensureTokenInteractive()) return;
+      const showOnline = Boolean(togOn && togOn.checked);
+      const showLastSeen = Boolean(togLs && togLs.checked);
+      try {
+        state.presence = await ghUpdateJson(
+          "presence.json",
+          (obj) => {
+            const base = (obj && typeof obj === "object") ? obj : {};
+            const users = { ...(base.users || {}) };
+            if (!showOnline && !showLastSeen) {
+              delete users["miralys"];
+            } else {
+              users["miralys"] = { lastSeen: Date.now() };
+            }
+            return { users, devPrefs: { showOnline, showLastSeen } };
+          },
+          "Update dev presence prefs",
+          { users: {}, devPrefs: { showOnline: false, showLastSeen: false } },
+          "presence"
+        );
+      } catch (err) {
+        alert("Ошибка сохранения невидимки: " + err.message);
+      }
+    };
+    if (togOn) togOn.onchange = saveDevStealth;
+    if (togLs) togLs.onchange = saveDevStealth;
+
     const renameForm = document.getElementById("profile-rename-form");
     if (renameForm) {
       renameForm.onsubmit = async (e) => {
@@ -2392,13 +2682,15 @@
     openModal("modal-profile");
 
     if (IS_GITHUB_READY) {
-      ghGetFile("data/tg_status.json").then(res => {
-        state.tgStatus = res.data || {};
+      Promise.all([
+        ghGetFile("data/tg_status.json").then(r => { state.tgStatus = r.data || {}; }).catch(() => {}),
+        loadPresence()
+      ]).then(() => {
         const pModal = document.getElementById("modal-profile");
         if (pModal && !pModal.classList.contains("hidden")) {
           renderProfileBody();
         }
-      }).catch(() => {});
+      });
     }
   }
 
@@ -2534,7 +2826,8 @@
       if (defSvg) defSvg.classList.remove("hidden");
       navAv.classList.add("hidden");
     }
-    document.getElementById("dev-banner").classList.toggle("hidden", !isDevMode());
+    const showDevBanner = isDevMode() && (!state.currentUser || isCreatorUser());
+    document.getElementById("dev-banner").classList.toggle("hidden", !showDevBanner);
     document.getElementById("auth-dev-badge").classList.toggle("hidden", !isDevMode());
   }
 
@@ -2574,6 +2867,7 @@
       state.currentUser = { username: "Miralys", isCreator: true };
       localStorage.setItem(LS_SESSION, JSON.stringify(state.currentUser));
       updateAuthUI();
+      pingPresence(true);
       closeModal("modal-auth");
       return;
     }
@@ -2588,6 +2882,7 @@
       state.currentUser = { username: found.username, isCreator: false };
       localStorage.setItem(LS_SESSION, JSON.stringify(state.currentUser));
       updateAuthUI();
+      pingPresence(true);
       closeModal("modal-auth");
       return;
     }
@@ -2623,6 +2918,7 @@
       localStorage.setItem(LS_SESSION, JSON.stringify(state.currentUser));
       updateAuthUI();
       updateCounts();
+      pingPresence(true);
       closeModal("modal-auth");
     } catch (err) {
       showErr("Ошибка при пуше: " + err.message);
@@ -2664,6 +2960,27 @@
       books: "Текст книги (деление на страницы через строку ---)"
     };
     document.getElementById("pub-text-label").textContent = textLabels[type] || "Текст";
+
+    let devBox = document.getElementById("pub-dev-box");
+    if (!devBox) {
+      devBox = document.createElement("div");
+      devBox.id = "pub-dev-box";
+      devBox.className = "dev-panel-box hidden";
+      devBox.innerHTML = `
+        <div class="dev-panel-title">🛠 Опции Создателя</div>
+        <label class="toggle-row" style="margin-bottom:0.6rem;">
+          <span>🤫 Тихий пост (без уведомления в Telegram)</span>
+          <input type="checkbox" id="pub-silent">
+        </label>
+        <label style="font-weight:500;">
+          📅 Своя дата поста (пусто = сейчас)
+          <input type="datetime-local" id="pub-custom-date">
+        </label>
+      `;
+      const passGrp = document.getElementById("pub-passphrase-group");
+      passGrp.parentNode.insertBefore(devBox, passGrp);
+    }
+    devBox.classList.toggle("hidden", !isCreatorUser());
 
     const needPass = IS_GITHUB_READY && Boolean(CFG.ENCRYPTED_TOKEN) && !getUnlockedToken();
     document.getElementById("pub-passphrase-group").classList.toggle("hidden", !needPass);
@@ -2848,13 +3165,25 @@
       }
 
       setProgress(95, "Записываем пост в архив...");
+      let postDateIso = new Date().toISOString();
+      let isSilentPost = false;
+      if (isCreatorUser()) {
+        const cdEl = document.getElementById("pub-custom-date");
+        const silEl = document.getElementById("pub-silent");
+        if (cdEl && cdEl.value) {
+          const parsedD = new Date(cdEl.value);
+          if (!isNaN(parsedD.getTime())) postDateIso = parsedD.toISOString();
+        }
+        if (silEl && silEl.checked) isSilentPost = true;
+      }
+
       const newPost = {
         id: postId,
         type,
         title,
         text,
         author: state.currentUser.username,
-        createdAt: new Date().toISOString(),
+        createdAt: postDateIso,
         tags,
         likes: [],
         comments: []
@@ -2870,7 +3199,8 @@
       if (videoUrl) newPost.videoUrl = videoUrl;
 
       if (IS_GITHUB_READY) {
-        state.posts = await ghUpdateJson("data/posts.json", list => [newPost, ...list], `Add ${type}: ${title}`);
+        const cMsg = isSilentPost ? `Update author silent post ${postId}` : `Add ${type}: ${title}`;
+        state.posts = await ghUpdateJson("data/posts.json", list => [newPost, ...list], cMsg);
         saveOptimisticPost(newPost);
       } else {
         state.posts.unshift(newPost);
@@ -2897,13 +3227,37 @@
   }
 
   // ====== УЧАСТНИКИ ======
-  function openUsersModal() {
+  async function resetUserPassword(username) {
+    if (!isCreatorUser()) return;
+    const newPass = prompt(`Введи новый пароль для ${username}:`);
+    if (!newPass) return;
+    if (!ensureTokenInteractive()) return;
+    const lower = username.toLowerCase();
+    try {
+      state.users = await ghUpdateJson(
+        "data/users.json",
+        list => list.map(u => {
+          if (u.username.toLowerCase() !== lower) return u;
+          const authKey = (u.authKey || u.username).toLowerCase();
+          return { ...u, passHash: sha256Hex("DEBIN_USER:" + authKey + ":" + newPass) };
+        }),
+        `Update author reset password for ${username}`
+      );
+      alert(`✅ Пароль для ${username} изменён! Можешь скинуть ему новый пароль.`);
+    } catch (err) {
+      alert("Ошибка сброса: " + err.message);
+    }
+  }
+
+  function renderUsersModalBody() {
     const listEl = document.getElementById("users-list");
+    if (!listEl) return;
     const postCountBy = {};
     state.posts.forEach(p => {
       const k = (p.author || "").toLowerCase();
       postCountBy[k] = (postCountBy[k] || 0) + 1;
     });
+    const isDev = isCreatorUser();
 
     let html = `
       <div class="user-row creator-row">
@@ -2911,7 +3265,7 @@
           ${renderAvatarHtml("Miralys", "av-md", true)}
           <div>
             <strong>Miralys</strong>
-            <div class="muted-note" style="margin:0;">Постов: ${postCountBy["miralys"] || 0} • старше вселенной</div>
+            <div class="muted-note" style="margin:0;">Постов: ${postCountBy["miralys"] || 0} • ${formatPresenceLine("Miralys", "старше вселенной")}</div>
           </div>
         </div>
         <span class="badge-creator">Создатель</span>
@@ -2920,25 +3274,42 @@
 
     state.users.forEach(u => {
       const cnt = postCountBy[u.username.toLowerCase()] || 0;
+      const presLine = formatPresenceLine(u.username, `С нами с ${formatDate(u.createdAt)}`);
       html += `
         <div class="user-row">
           <div class="user-row-left">
             ${renderAvatarHtml(u.username, "av-md", true)}
             <div>
               <strong>${esc(u.username)}</strong>
-              <div class="muted-note" style="margin:0;">Постов: ${cnt} • С нами с ${formatDate(u.createdAt)}</div>
+              <div class="muted-note" style="margin:0;">Постов: ${cnt} • ${presLine}</div>
             </div>
           </div>
-          <span class="badge-member">Участник</span>
+          <div class="user-row-actions">
+            ${isDev ? `<button type="button" class="btn-mini" data-reset-pass="${esc(u.username)}" title="Сбросить пароль">🔑</button>` : ""}
+            <span class="badge-member">Участник</span>
+          </div>
         </div>
       `;
     });
 
     listEl.innerHTML = html;
+    listEl.querySelectorAll("[data-reset-pass]").forEach(btn => {
+      btn.onclick = () => resetUserPassword(btn.dataset.resetPass);
+    });
 
     const inviteBox = document.getElementById("invite-box");
     inviteBox.classList.toggle("hidden", !getUnlockedToken() || !IS_GITHUB_READY);
+  }
+
+  function openUsersModal() {
+    renderUsersModalBody();
     openModal("modal-users");
+    if (IS_GITHUB_READY) {
+      loadPresence().then(() => {
+        const um = document.getElementById("modal-users");
+        if (um && !um.classList.contains("hidden")) renderUsersModalBody();
+      });
+    }
   }
 
   // ====== МОДАЛКИ И СОБЫТИЯ ======
@@ -3008,6 +3379,14 @@
     updateAuthUI();
     updateCounts();
     renderFeed();
+
+    if (IS_GITHUB_READY) {
+      loadPresence().then(() => pingPresence(false));
+      setInterval(() => pingPresence(false), 60000);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") pingPresence(false);
+      });
+    }
 
     const initialPostId = getPostIdFromUrl();
     const initialCommentId = getCommentIdFromUrl();
