@@ -859,7 +859,15 @@
       "Викииич",
       "Miralys"
     ],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1795170409517-ulr",
+        "author": "Викииич",
+        "text": "ХАХАХАХАХАХХАХАХАХА БЛЯЯЯЯЯ",
+        "likes": [],
+        "createdAt": "2026-11-20T10:26:49.517Z"
+      }
+    ],
     "mediaUrl": "./uploads/post-20220513-dungeon.mp4",
     "thumbUrl": "./uploads/post-20220513-dungeon_thumb.jpg"
   }
