@@ -1,11 +1,11 @@
 {
   "users": {
     "miralys": {
-      "lastSeen": 1795180869313
+      "lastSeen": 1795180871278
     }
   },
   "devPrefs": {
     "showOnline": true,
-    "showLastSeen": false
+    "showLastSeen": true
   }
 }
