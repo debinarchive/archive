@@ -755,15 +755,20 @@
     const url = (state.avatars && state.avatars[lower]) || "";
     const src = sess || url;
     const fb = url ? mediaUrlWithFallback(url) : "";
-    return { src, fb, hasCustom: Boolean(src) };
+    const isVideo = /\.(mp4|webm|mov)(\?|$)/i.test(url) || Boolean(state.sessionMedia["av_vid_" + lower]);
+    return { src, fb, hasCustom: Boolean(src), isVideo };
   }
 
   function renderAvatarHtml(username, sizeClass = "av-sm", clickable = false) {
     const name = String(username || "?");
-    const { src, fb, hasCustom } = getAvatarInfo(name);
+    const { src, fb, hasCustom, isVideo } = getAvatarInfo(name);
     if (hasCustom) {
       const clickAttr = clickable ? `data-zoom-avatar="${esc(name)}" title="Открыть аватар ${esc(name)}"` : "";
-      return `<span class="user-avatar ${sizeClass} ${clickable ? "av-click" : ""}" ${clickAttr}><img src="${esc(src)}" alt="" ${fb ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(fb)}';}"` : ""}></span>`;
+      const errAttr = fb ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(fb)}';}"` : "";
+      const mediaTag = isVideo
+        ? `<video src="${esc(src)}" autoplay loop muted playsinline ${errAttr}></video>`
+        : `<img src="${esc(src)}" alt="" ${errAttr}>`;
+      return `<span class="user-avatar ${sizeClass} ${clickable ? "av-click" : ""}" ${clickAttr}>${mediaTag}</span>`;
     }
     let h = 0;
     for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
@@ -773,7 +778,7 @@
   }
 
   function openAvatarLightbox(username) {
-    const { src, fb, hasCustom } = getAvatarInfo(username);
+    const { src, fb, hasCustom, isVideo } = getAvatarInfo(username);
     if (!hasCustom) return;
     let modal = document.getElementById("modal-avatar-view");
     if (!modal) {
@@ -794,13 +799,23 @@
       modal.addEventListener("click", (e) => { if (e.target === modal) closeModal("modal-avatar-view"); });
     }
     document.getElementById("av-lb-title").textContent = `Аватар: ${username}`;
-    document.getElementById("av-lb-body").innerHTML = `<img class="avatar-lightbox-img" src="${esc(src)}" alt="${esc(username)}" ${fb ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(fb)}';}"` : ""}>`;
+    const errAttr = fb ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(fb)}';}"` : "";
+    document.getElementById("av-lb-body").innerHTML = isVideo
+      ? `<video class="avatar-lightbox-img" src="${esc(src)}" autoplay loop muted playsinline controls ${errAttr}></video>`
+      : `<img class="avatar-lightbox-img" src="${esc(src)}" alt="${esc(username)}" ${errAttr}>`;
     openModal("modal-avatar-view");
   }
 
   async function openAvatarCropper(file) {
     if (file.type === "image/gif" && file.size <= 5 * 1024 * 1024) {
-      return { blob: file, ext: "gif", mime: "image/gif" };
+      return { blob: file, ext: "gif", mime: "image/gif", isVideo: false };
+    }
+    if (file.type.startsWith("video/") || /\.(mp4|mov|webm)$/i.test(file.name)) {
+      if (file.size > 6 * 1024 * 1024) {
+        throw new Error("Видео-аватарка должна быть до 6 МБ (как короткая гифка из ТГ/ТТ)!");
+      }
+      const ext = (file.name.split(".").pop() || "mp4").toLowerCase().replace(/[^a-z0-9]/g, "");
+      return { blob: file, ext: ext === "mov" ? "mp4" : ext, mime: file.type || "video/mp4", isVideo: true };
     }
     const url = URL.createObjectURL(file);
     const img = await new Promise((resolve, reject) => {
@@ -2170,7 +2185,7 @@
         <span class="${state.currentUser.isCreator ? "badge-creator" : "badge-member"}">${state.currentUser.isCreator ? "Создатель" : "Участник"}</span>
       </div>
       <div class="avatar-controls">
-        <input type="file" id="profile-avatar-input" accept="image/*" class="hidden">
+        <input type="file" id="profile-avatar-input" accept="image/*,video/mp4,video/webm,video/quicktime" class="hidden">
         <button type="button" id="profile-avatar-btn" class="btn-secondary" style="flex:1;">📷 ${myAv.hasCustom ? "Сменить аватар" : "Загрузить аватар"}</button>
         ${myAv.hasCustom ? `<button type="button" id="profile-avatar-del-btn" class="btn-danger">Убрать</button>` : ""}
       </div>
@@ -2207,6 +2222,7 @@
           const prevPath = (state.avatars && state.avatars[myLower]) || "";
           const blobUrl = URL.createObjectURL(proc.blob);
           state.sessionMedia["av_" + myLower] = blobUrl;
+          state.sessionMedia["av_vid_" + myLower] = Boolean(proc.isVideo);
 
           let savedVal = blobUrl;
           if (IS_GITHUB_READY) {
@@ -2241,6 +2257,7 @@
         try {
           const prevPath = (state.avatars && state.avatars[myLower]) || "";
           delete state.sessionMedia["av_" + myLower];
+          delete state.sessionMedia["av_vid_" + myLower];
           if (IS_GITHUB_READY) {
             state.avatars = await ghUpdateJson("data/avatars.json", obj => {
               const next = { ...(obj || {}) };
