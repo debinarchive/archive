@@ -28,10 +28,13 @@
     photos: `<svg viewBox="0 0 40 40"><path fill-rule="evenodd" d="m20.82 15.38c0 1.11-.88 1.89-1.86 1.89s-1.97-.89-1.97-1.89c0-1 .88-1.89 1.97-1.89.99 0 1.86.89 1.86 1.89zm-5.92-3.79h15.45v6.01l-1.97-3.34-2.63 6.35-2.19-2.67-6.14 5.12h-2.52zm-1.75-1.67v14.92h18.85v-14.92z"/></svg>`
   };
 
+  const LS_LOCAL_AVATARS = "debin_local_avatars";
+
   let state = {
     posts: [],
     users: [],
     tgStatus: {},
+    avatars: {},
     currentTab: "all",
     searchQuery: "",
     authMode: "login",
@@ -664,28 +667,33 @@
     let posts = [];
     let users = [];
     let tgStatus = {};
+    let avatars = {};
 
     if (IS_GITHUB_READY) {
       let usedStaticFallback = false;
       try {
-        const [pRes, uRes, tRes] = await Promise.all([
+        const [pRes, uRes, tRes, aRes] = await Promise.all([
           ghGetFile("data/posts.json"),
           ghGetFile("data/users.json").catch(() => ({ data: [] })),
-          ghGetFile("data/tg_status.json").catch(() => ({ data: {} }))
+          ghGetFile("data/tg_status.json").catch(() => ({ data: {} })),
+          ghGetFile("data/avatars.json").catch(() => ({ data: {} }))
         ]);
         posts = pRes.data;
         users = uRes.data;
         tgStatus = tRes.data || {};
+        avatars = aRes.data || {};
       } catch {
         usedStaticFallback = true;
-        const [pLoc, uLoc, tLoc] = await Promise.all([
+        const [pLoc, uLoc, tLoc, aLoc] = await Promise.all([
           fetch(`./data/posts.json?t=${Date.now()}`).then(r => r.json()).catch(() => []),
           fetch(`./data/users.json?t=${Date.now()}`).then(r => r.json()).catch(() => []),
-          fetch(`./data/tg_status.json?t=${Date.now()}`).then(r => r.json()).catch(() => ({}))
+          fetch(`./data/tg_status.json?t=${Date.now()}`).then(r => r.json()).catch(() => ({})),
+          fetch(`./data/avatars.json?t=${Date.now()}`).then(r => r.json()).catch(() => ({}))
         ]);
         posts = pLoc;
         users = uLoc;
         tgStatus = tLoc || {};
+        avatars = aLoc || {};
       }
 
       if (usedStaticFallback) {
@@ -710,11 +718,13 @@
         posts = JSON.parse(localStorage.getItem(LS_LOCAL_POSTS) || "null") || getFallbackSamplePosts();
       }
       users = JSON.parse(localStorage.getItem(LS_LOCAL_USERS) || "[]");
+      avatars = JSON.parse(localStorage.getItem(LS_LOCAL_AVATARS) || "{}");
     }
 
     state.posts = Array.isArray(posts) ? posts : [];
     state.users = Array.isArray(users) ? users : [];
     state.tgStatus = (tgStatus && typeof tgStatus === "object") ? tgStatus : {};
+    state.avatars = (avatars && typeof avatars === "object") ? avatars : {};
   }
 
   function getFallbackSamplePosts() {
@@ -732,6 +742,91 @@
         tags: ["книга", "Джан"]
       }
     ];
+  }
+
+  // ====== АВАТАРКИ ======
+  const AVATAR_COLORS = ["#194880", "#31a481", "#d9534f", "#ee8950", "#4b64ff", "#6f42c1"];
+
+  function getAvatarInfo(username) {
+    const lower = String(username || "").trim().toLowerCase();
+    const sess = state.sessionMedia["av_" + lower];
+    const url = (state.avatars && state.avatars[lower]) || "";
+    const src = sess || url;
+    const fb = url ? mediaUrlWithFallback(url) : "";
+    return { src, fb, hasCustom: Boolean(src) };
+  }
+
+  function renderAvatarHtml(username, sizeClass = "av-sm", clickable = false) {
+    const name = String(username || "?");
+    const { src, fb, hasCustom } = getAvatarInfo(name);
+    if (hasCustom) {
+      const clickAttr = clickable ? `data-zoom-avatar="${esc(name)}" title="Открыть аватар ${esc(name)}"` : "";
+      return `<span class="user-avatar ${sizeClass} ${clickable ? "av-click" : ""}" ${clickAttr}><img src="${esc(src)}" alt="" ${fb ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(fb)}';}"` : ""}></span>`;
+    }
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+    const bg = AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
+    const letter = name.trim().charAt(0).toUpperCase() || "?";
+    return `<span class="user-avatar ${sizeClass}" style="background:${bg};">${esc(letter)}</span>`;
+  }
+
+  function openAvatarLightbox(username) {
+    const { src, fb, hasCustom } = getAvatarInfo(username);
+    if (!hasCustom) return;
+    let modal = document.getElementById("modal-avatar-view");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "modal-avatar-view";
+      modal.className = "modal-backdrop hidden";
+      modal.innerHTML = `
+        <div class="modal-box modal-sm">
+          <div class="modal-head">
+            <h3 id="av-lb-title">Аватар</h3>
+            <button class="modal-close" data-close="modal-avatar-view">✕</button>
+          </div>
+          <div class="modal-body" id="av-lb-body"></div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      modal.querySelector("[data-close='modal-avatar-view']").addEventListener("click", () => closeModal("modal-avatar-view"));
+      modal.addEventListener("click", (e) => { if (e.target === modal) closeModal("modal-avatar-view"); });
+    }
+    document.getElementById("av-lb-title").textContent = `Аватар: ${username}`;
+    document.getElementById("av-lb-body").innerHTML = `<img class="avatar-lightbox-img" src="${esc(src)}" alt="${esc(username)}" ${fb ? `onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(fb)}';}"` : ""}>`;
+    openModal("modal-avatar-view");
+  }
+
+  async function processAvatarForUpload(file) {
+    if (file.type === "image/gif" && file.size <= 5 * 1024 * 1024) {
+      return { blob: file, ext: "gif", mime: "image/gif" };
+    }
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const side = Math.min(img.width, img.height);
+        const sx = Math.floor((img.width - side) / 2);
+        const sy = Math.floor((img.height - side) / 2);
+        const outSize = 512;
+        const canvas = document.createElement("canvas");
+        canvas.width = outSize;
+        canvas.height = outSize;
+        canvas.getContext("2d").drawImage(img, sx, sy, side, side, 0, 0, outSize, outSize);
+        const canWebp = canvas.toDataURL("image/webp").startsWith("data:image/webp");
+        const mime = canWebp ? "image/webp" : "image/jpeg";
+        const ext = canWebp ? "webp" : "jpg";
+        canvas.toBlob((blob) => {
+          if (!blob) return reject(new Error("Не удалось обработать аватар"));
+          resolve({ blob, ext, mime });
+        }, mime, 0.88);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Не удалось открыть картинку (если это HEIC с айфона — сделай скриншот или выбери JPG)"));
+      };
+      img.src = url;
+    });
   }
 
   // ====== РЕНДЕР ======
@@ -852,7 +947,7 @@
           <div class="tile-thumb">${thumbHtml}</div>
           <div class="tile-body">
             <h3 class="tile-title">${esc(post.title)}</h3>
-            <div class="tile-meta">${esc(subMeta)}</div>
+            <div class="tile-meta tile-meta-wrap">${renderAvatarHtml(post.author, "av-xs")}<span>${esc(subMeta)}</span></div>
           </div>
           <div class="tile-stats">
             <span class="tile-type-badge">${TYPE_ICONS[post.type] || ""} ${esc(labelForType(post.type))}</span>
@@ -1297,7 +1392,8 @@
       <div class="comment-node">
         <div class="comment-item" data-comment-id="${esc(node.id)}">
           <div class="comment-head">
-            <div>
+            <div class="comment-author-wrap">
+              ${renderAvatarHtml(node.author, "av-sm", true)}
               <span class="comment-author">${esc(node.author)}</span>
               ${isCreatorComment ? `<span class="comment-creator-tag">Создатель</span>` : ""}
               ${node.replyTo ? `<span class="comment-reply-badge">↪ @${esc(node.replyTo)}</span>` : ""}
@@ -1555,7 +1651,7 @@
     return `
       <table class="detail-meta-table">
         <tr><td>Раздел</td><td>${esc(labelForType(post.type))}</td></tr>
-        <tr><td>Опубликовал</td><td>${esc(post.author || "Аноним")}</td></tr>
+        <tr><td>Опубликовал</td><td><span class="tile-meta-wrap">${renderAvatarHtml(post.author, "av-sm", true)}<span>${esc(post.author || "Аноним")}</span></span></td></tr>
         <tr><td>Дата архивации</td><td>${formatDate(post.createdAt)}</td></tr>
         ${post.tags && post.tags.length ? `<tr><td>Теги</td><td>${post.tags.map(t => `#${esc(t)}`).join(" ")}</td></tr>` : ""}
       </table>
@@ -1711,20 +1807,105 @@
         </form>
       `;
 
+    const myAv = getAvatarInfo(state.currentUser.username);
     body.innerHTML = `
-      <div class="user-row ${state.currentUser.isCreator ? "creator-row" : ""}" style="margin-bottom:1.2rem;">
-        <div>
-          <strong>${esc(state.currentUser.username)}</strong>
-          <div class="muted-note" style="margin:0;">Текущий профиль</div>
+      <div class="user-row ${state.currentUser.isCreator ? "creator-row" : ""}" style="margin-bottom:0.8rem;">
+        <div class="user-row-left">
+          ${renderAvatarHtml(state.currentUser.username, "av-lg", true)}
+          <div>
+            <strong>${esc(state.currentUser.username)}</strong>
+            <div class="muted-note" style="margin:0;">Текущий профиль</div>
+          </div>
         </div>
         <span class="${state.currentUser.isCreator ? "badge-creator" : "badge-member"}">${state.currentUser.isCreator ? "Создатель" : "Участник"}</span>
       </div>
+      <div class="avatar-controls">
+        <input type="file" id="profile-avatar-input" accept="image/*" class="hidden">
+        <button type="button" id="profile-avatar-btn" class="btn-secondary" style="flex:1;">📷 ${myAv.hasCustom ? "Сменить аватар" : "Загрузить аватар"}</button>
+        ${myAv.hasCustom ? `<button type="button" id="profile-avatar-del-btn" class="btn-danger">Убрать</button>` : ""}
+      </div>
+      <div id="profile-av-status" class="form-status hidden" style="margin-bottom:1rem;"></div>
       ${tgBlock}
       ${renameSection}
       <div style="border-top:1px solid #eee;padding-top:1.2rem;">
         <button type="button" id="profile-logout-btn" class="btn-danger full-btn">Выйти из аккаунта</button>
       </div>
     `;
+
+    const avBtn = document.getElementById("profile-avatar-btn");
+    const avInp = document.getElementById("profile-avatar-input");
+    const avDel = document.getElementById("profile-avatar-del-btn");
+    if (avBtn && avInp) {
+      avBtn.onclick = () => avInp.click();
+      avInp.onchange = async () => {
+        const f = avInp.files && avInp.files[0];
+        if (!f) return;
+        if (!ensureTokenInteractive()) return;
+        avBtn.disabled = true;
+        avBtn.textContent = "Загружаем аву...";
+        try {
+          const proc = await processAvatarForUpload(f);
+          const safeKey = myLower.replace(/[^a-z0-9_-]/g, "") || "u";
+          const filePath = `uploads/av_${safeKey}_${Date.now()}.${proc.ext}`;
+          const prevPath = (state.avatars && state.avatars[myLower]) || "";
+          const blobUrl = URL.createObjectURL(proc.blob);
+          state.sessionMedia["av_" + myLower] = blobUrl;
+
+          let savedVal = blobUrl;
+          if (IS_GITHUB_READY) {
+            await ghPutRaw(filePath, await blobToBase64(proc.blob), `Upload avatar for ${state.currentUser.username}`);
+            savedVal = `./${filePath}`;
+            state.avatars = await ghUpdateJson("data/avatars.json", obj => ({ ...(obj || {}), [myLower]: savedVal }), `Set avatar for ${state.currentUser.username}`, {});
+            if (prevPath && prevPath.startsWith("./uploads/")) {
+              enqueueGhWrite(() => ghDeleteFile(prevPath.replace(/^\.\//, ""), `Remove old avatar for ${state.currentUser.username}`)).catch(() => {});
+            }
+          } else {
+            savedVal = `data:${proc.mime};base64,${await blobToBase64(proc.blob)}`;
+            state.avatars[myLower] = savedVal;
+            localStorage.setItem(LS_LOCAL_AVATARS, JSON.stringify(state.avatars));
+          }
+          renderProfileBody();
+          updateAuthUI();
+          renderFeed();
+          const st2 = document.getElementById("profile-av-status");
+          if (st2) { st2.textContent = "✅ Аватар обновлён!"; st2.classList.remove("hidden"); }
+        } catch (err) {
+          alert("Не вышло поставить аву: " + err.message);
+          avBtn.disabled = false;
+          avBtn.textContent = "📷 Загрузить аватар";
+        }
+      };
+    }
+    if (avDel) {
+      avDel.onclick = async () => {
+        if (!confirm("Удалить аватарку?")) return;
+        if (!ensureTokenInteractive()) return;
+        avDel.disabled = true;
+        try {
+          const prevPath = (state.avatars && state.avatars[myLower]) || "";
+          delete state.sessionMedia["av_" + myLower];
+          if (IS_GITHUB_READY) {
+            state.avatars = await ghUpdateJson("data/avatars.json", obj => {
+              const next = { ...(obj || {}) };
+              delete next[myLower];
+              return next;
+            }, `Remove avatar for ${state.currentUser.username}`, {});
+            if (prevPath && prevPath.startsWith("./uploads/")) {
+              enqueueGhWrite(() => ghDeleteFile(prevPath.replace(/^\.\//, ""), `Delete avatar file for ${state.currentUser.username}`)).catch(() => {});
+            }
+          } else {
+            delete state.avatars[myLower];
+            localStorage.setItem(LS_LOCAL_AVATARS, JSON.stringify(state.avatars));
+          }
+          renderProfileBody();
+          updateAuthUI();
+          renderFeed();
+        } catch (err) {
+          alert("Ошибка: " + err.message);
+          avDel.disabled = false;
+        }
+      };
+    }
 
     const confirmBtn = document.getElementById("tg-confirm-btn");
     if (confirmBtn) {
@@ -1915,6 +2096,18 @@
           state.tgStatus[newLower] = true;
         }
 
+        if (state.avatars && state.avatars[oldLower]) {
+          state.avatars = await ghUpdateJson("data/avatars.json", obj => {
+            const next = { ...(obj || {}) };
+            if (next[oldLower]) { next[newLower] = next[oldLower]; delete next[oldLower]; }
+            return next;
+          }, `Move avatar ${oldName} -> ${newName}`, {});
+          if (state.sessionMedia["av_" + oldLower]) {
+            state.sessionMedia["av_" + newLower] = state.sessionMedia["av_" + oldLower];
+            delete state.sessionMedia["av_" + oldLower];
+          }
+        }
+
         const opt = JSON.parse(localStorage.getItem(LS_OPTIMISTIC_POSTS) || "[]");
         localStorage.setItem(LS_OPTIMISTIC_POSTS, JSON.stringify(renameUserInPosts(opt, oldLower, newName)));
       } else {
@@ -1941,11 +2134,31 @@
 
   // ====== АВТОРИЗАЦИЯ И ШИЗА С MIRALYS ======
   function updateAuthUI() {
+    const btn = document.getElementById("nav-auth-btn");
     const lbl = document.getElementById("nav-auth-label");
+    const defSvg = btn.querySelector("svg");
+    let navAv = document.getElementById("nav-auth-avatar");
+    if (!navAv) {
+      navAv = document.createElement("span");
+      navAv.id = "nav-auth-avatar";
+      btn.insertBefore(navAv, lbl);
+    }
+
     if (state.currentUser) {
       lbl.textContent = state.currentUser.isCreator ? `Miralys [Создатель]` : state.currentUser.username;
+      const { hasCustom } = getAvatarInfo(state.currentUser.username);
+      if (hasCustom) {
+        if (defSvg) defSvg.classList.add("hidden");
+        navAv.innerHTML = renderAvatarHtml(state.currentUser.username, "av-nav");
+        navAv.classList.remove("hidden");
+      } else {
+        if (defSvg) defSvg.classList.remove("hidden");
+        navAv.classList.add("hidden");
+      }
     } else {
       lbl.textContent = "Войти";
+      if (defSvg) defSvg.classList.remove("hidden");
+      navAv.classList.add("hidden");
     }
     document.getElementById("dev-banner").classList.toggle("hidden", !isDevMode());
     document.getElementById("auth-dev-badge").classList.toggle("hidden", !isDevMode());
@@ -2320,9 +2533,12 @@
 
     let html = `
       <div class="user-row creator-row">
-        <div>
-          <strong>Miralys</strong>
-          <div class="muted-note" style="margin:0;">Постов: ${postCountBy["miralys"] || 0} • Статус: в системе (и вне её)</div>
+        <div class="user-row-left">
+          ${renderAvatarHtml("Miralys", "av-md", true)}
+          <div>
+            <strong>Miralys</strong>
+            <div class="muted-note" style="margin:0;">Постов: ${postCountBy["miralys"] || 0} • Статус: в системе (и вне её)</div>
+          </div>
         </div>
         <span class="badge-creator">Создатель</span>
       </div>
@@ -2332,9 +2548,12 @@
       const cnt = postCountBy[u.username.toLowerCase()] || 0;
       html += `
         <div class="user-row">
-          <div>
-            <strong>${esc(u.username)}</strong>
-            <div class="muted-note" style="margin:0;">Постов: ${cnt} • С нами с ${formatDate(u.createdAt)}</div>
+          <div class="user-row-left">
+            ${renderAvatarHtml(u.username, "av-md", true)}
+            <div>
+              <strong>${esc(u.username)}</strong>
+              <div class="muted-note" style="margin:0;">Постов: ${cnt} • С нами с ${formatDate(u.createdAt)}</div>
+            </div>
           </div>
           <span class="badge-member">Участник</span>
         </div>
@@ -2553,6 +2772,14 @@
         if (e.target === bg) closeModal(bg.id);
       });
     });
+    document.addEventListener("click", (e) => {
+      const av = e.target.closest("[data-zoom-avatar]");
+      if (av) {
+        e.stopPropagation();
+        openAvatarLightbox(av.dataset.zoomAvatar);
+      }
+    });
+
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         document.querySelectorAll(".modal-backdrop:not(.hidden)").forEach(m => closeModal(m.id));
