@@ -1685,3 +1685,51 @@ body {
   display: flex;
   gap: 0.8rem;
 }
+
+
+/* === СОРТИРОВКА И ФИЛЬТР ПО АВТОРУ === */
+.feed-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #e4e4e8;
+}
+.sort-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.sort-pill {
+  background: #ffffff;
+  color: #444444;
+  border: 1px solid #cccccc;
+  border-radius: 4px;
+  padding: 0.45rem 1rem;
+  font-size: 1.25rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.sort-pill:hover {
+  border-color: #888888;
+  color: #111111;
+}
+.sort-pill.active {
+  background: var(--ia-theme-primary-cta-fill);
+  color: #ffffff;
+  border-color: var(--ia-theme-primary-cta-fill);
+}
+.author-select {
+  background: #ffffff;
+  color: #333333;
+  border: 1px solid #cccccc;
+  border-radius: 4px;
+  padding: 0.45rem 0.9rem;
+  font-size: 1.25rem;
+  font-family: inherit;
+  cursor: pointer;
+}

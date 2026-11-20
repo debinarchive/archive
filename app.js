@@ -37,6 +37,8 @@
     avatars: {},
     currentTab: "all",
     searchQuery: "",
+    sortBy: "newest",
+    filterAuthor: "",
     authMode: "login",
     currentUser: null,
     sessionMedia: {},
@@ -989,6 +991,170 @@
     });
   }
 
+  // ====== УМНЫЙ ПОИСК И ФИЛЬТРЫ ======
+  const EN_RU_MAP = {
+    q:"й", w:"ц", e:"у", r:"к", t:"е", y:"н", u:"г", i:"ш", o:"щ", p:"з", "[":"х", "]":"ъ",
+    a:"ф", s:"ы", d:"в", f:"а", g:"п", h:"р", j:"о", k:"л", l:"д", ";":"ж", "'":"э",
+    z:"я", x:"ч", c:"с", v:"м", b:"и", n:"т", m:"ь", ",":"б", ".":"ю", "`":"е"
+  };
+
+  function enToRuLayout(str) {
+    return String(str || "").toLowerCase().split("").map(ch => EN_RU_MAP[ch] || ch).join("");
+  }
+
+  function normSearchText(s) {
+    return String(s || "")
+      .toLowerCase()
+      .replace(/ё/g, "е")
+      .replace(/[^a-zа-я0-9\s]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function editDistance(a, b, maxDist = 2) {
+    const la = a.length, lb = b.length;
+    if (Math.abs(la - lb) > maxDist) return maxDist + 1;
+    let prev = Array.from({ length: lb + 1 }, (_, j) => j);
+    for (let i = 1; i <= la; i++) {
+      const curr = [i];
+      let rowMin = i;
+      for (let j = 1; j <= lb; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        const val = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+        curr.push(val);
+        if (val < rowMin) rowMin = val;
+      }
+      if (rowMin > maxDist) return maxDist + 1;
+      prev = curr;
+    }
+    return prev[lb];
+  }
+
+  function isTightSubseq(sub, word) {
+    let si = 0, first = -1, last = -1;
+    for (let wi = 0; wi < word.length && si < sub.length; wi++) {
+      if (word[wi] === sub[si]) {
+        if (first === -1) first = wi;
+        last = wi;
+        si++;
+      }
+    }
+    return si === sub.length && (last - first + 1) <= sub.length + 3;
+  }
+
+  function scorePostMatch(post, rawQuery) {
+    const qNorm = normSearchText(rawQuery);
+    const qRu = normSearchText(enToRuLayout(rawQuery));
+    const queries = qRu && qRu !== qNorm ? [qNorm, qRu] : [qNorm];
+
+    const fields = [
+      { text: normSearchText(post.title), weight: 3 },
+      { text: normSearchText(post.author), weight: 2.5 },
+      { text: normSearchText(post.quoteAuthor), weight: 2.5 },
+      { text: normSearchText(post.bookAuthor), weight: 2 },
+      { text: normSearchText((post.tags || []).join(" ")), weight: 2 },
+      { text: normSearchText(post.text), weight: 1 }
+    ];
+    const hayWords = fields.map(f => f.text).join(" ").split(" ").filter(Boolean);
+
+    let bestTotal = 0;
+    for (const qStr of queries) {
+      if (!qStr) continue;
+      const tokens = qStr.split(" ").filter(Boolean);
+      if (!tokens.length) continue;
+
+      let total = 0;
+      let allMatched = true;
+
+      for (const tok of tokens) {
+        const tokSquash = tok.replace(/(.)\1+/g, "$1");
+        let tokScore = 0;
+
+        for (const f of fields) {
+          if (f.text && f.text.includes(tok)) {
+            tokScore = Math.max(tokScore, 100 * f.weight);
+          }
+        }
+        if (tokScore === 0) {
+          const maxErr = tok.length >= 7 ? 2 : (tok.length >= 4 ? 1 : 0);
+          for (const w of hayWords) {
+            if (w.startsWith(tok)) {
+              tokScore = Math.max(tokScore, 80);
+            } else if (tokSquash.length >= 2 && w.replace(/(.)\1+/g, "$1").includes(tokSquash)) {
+              tokScore = Math.max(tokScore, 75);
+            } else if (maxErr > 0) {
+              const dFull = editDistance(tok, w, maxErr);
+              const dPref = w.length > tok.length ? editDistance(tok, w.slice(0, tok.length), maxErr) : 99;
+              const d = Math.min(dFull, dPref);
+              if (d <= maxErr) {
+                tokScore = Math.max(tokScore, 55 - d * 15);
+              }
+            }
+            if (tokScore === 0 && tok.length >= 4 && isTightSubseq(tok, w)) {
+              tokScore = Math.max(tokScore, 22);
+            }
+          }
+        }
+        if (tokScore === 0) {
+          allMatched = false;
+          break;
+        }
+        total += tokScore;
+      }
+      if (allMatched) bestTotal = Math.max(bestTotal, total);
+    }
+    return bestTotal;
+  }
+
+  function ensureFeedControls() {
+    if (document.getElementById("feed-controls")) return;
+    const grid = document.getElementById("feed-grid");
+    const bar = document.createElement("div");
+    bar.id = "feed-controls";
+    bar.className = "feed-controls";
+    bar.innerHTML = `
+      <div class="sort-pills">
+        <button type="button" class="sort-pill active" data-sort="newest">Новое</button>
+        <button type="button" class="sort-pill" data-sort="oldest">Старое</button>
+        <button type="button" class="sort-pill" data-sort="likes">Топ лайков</button>
+        <button type="button" class="sort-pill" data-sort="comments">Обсуждаемое</button>
+      </div>
+      <select id="filter-author" class="author-select" aria-label="Фильтр по автору">
+        <option value="">Автор: Все</option>
+      </select>
+    `;
+    grid.parentNode.insertBefore(bar, grid);
+
+    bar.querySelectorAll("[data-sort]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        state.sortBy = btn.dataset.sort;
+        bar.querySelectorAll("[data-sort]").forEach(b => b.classList.toggle("active", b === btn));
+        renderFeed();
+      });
+    });
+
+    document.getElementById("filter-author").addEventListener("change", (e) => {
+      state.filterAuthor = e.target.value;
+      renderFeed();
+    });
+  }
+
+  function syncFeedControls() {
+    ensureFeedControls();
+    const sel = document.getElementById("filter-author");
+    if (!sel) return;
+    const seen = new Map();
+    state.posts.forEach(p => {
+      const a = String(p.author || "").trim();
+      if (a && !seen.has(a.toLowerCase())) seen.set(a.toLowerCase(), a);
+    });
+    const prevVal = state.filterAuthor;
+    sel.innerHTML = `<option value="">Автор: Все</option>` +
+      [...seen.entries()].map(([low, orig]) => `<option value="${esc(low)}">${esc(orig)}</option>`).join("");
+    sel.value = seen.has(prevVal) ? prevVal : "";
+    if (sel.value !== prevVal) state.filterAuthor = "";
+  }
+
   // ====== РЕНДЕР ======
   function updateCounts() {
     const counts = { thoughts: 0, quotes: 0, video: 0, books: 0, photos: 0 };
@@ -1039,16 +1205,40 @@
     const titleEl = document.getElementById("feed-title");
     const statsEl = document.getElementById("feed-stats");
 
+    syncFeedControls();
     titleEl.textContent = TAB_TITLES[state.currentTab] || "Архив";
-    const q = state.searchQuery.trim().toLowerCase();
+    const q = state.searchQuery.trim();
 
-    const filtered = state.posts.filter(p => {
-      if (state.currentTab !== "all" && p.type !== state.currentTab) return false;
-      if (!q) return true;
-      const haystack = [p.title, p.text, p.author, p.quoteAuthor, p.bookAuthor, ...(p.tags || [])]
-        .join(" ").toLowerCase();
-      return haystack.includes(q);
+    const scored = [];
+    for (const p of state.posts) {
+      if (state.currentTab !== "all" && p.type !== state.currentTab) continue;
+      if (state.filterAuthor && String(p.author || "").trim().toLowerCase() !== state.filterAuthor) continue;
+      if (q) {
+        const sc = scorePostMatch(p, q);
+        if (sc <= 0) continue;
+        scored.push({ post: p, score: sc, tier: sc >= 100 ? 2 : 1 });
+      } else {
+        scored.push({ post: p, score: 0, tier: 2 });
+      }
+    }
+
+    const postTs = (p) => Date.parse(p.createdAt) || 0;
+    scored.sort((a, b) => {
+      if (q && b.tier !== a.tier) return b.tier - a.tier;
+      if (q && a.tier === 1 && state.sortBy === "newest" && b.score !== a.score) return b.score - a.score;
+      if (state.sortBy === "oldest") return postTs(a.post) - postTs(b.post);
+      if (state.sortBy === "likes") {
+        const dl = (b.post.likes?.length || 0) - (a.post.likes?.length || 0);
+        return dl !== 0 ? dl : postTs(b.post) - postTs(a.post);
+      }
+      if (state.sortBy === "comments") {
+        const dc = (b.post.comments?.length || 0) - (a.post.comments?.length || 0);
+        return dc !== 0 ? dc : postTs(b.post) - postTs(a.post);
+      }
+      return postTs(b.post) - postTs(a.post);
     });
+
+    const filtered = scored.map(x => x.post);
 
     statsEl.textContent = `Найдено: ${filtered.length}`;
     if (!filtered.length) {
