@@ -796,36 +796,196 @@
     openModal("modal-avatar-view");
   }
 
-  async function processAvatarForUpload(file) {
+  async function openAvatarCropper(file) {
     if (file.type === "image/gif" && file.size <= 5 * 1024 * 1024) {
       return { blob: file, ext: "gif", mime: "image/gif" };
     }
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        const side = Math.min(img.width, img.height);
-        const sx = Math.floor((img.width - side) / 2);
-        const sy = Math.floor((img.height - side) / 2);
-        const outSize = 512;
-        const canvas = document.createElement("canvas");
-        canvas.width = outSize;
-        canvas.height = outSize;
-        canvas.getContext("2d").drawImage(img, sx, sy, side, side, 0, 0, outSize, outSize);
-        const canWebp = canvas.toDataURL("image/webp").startsWith("data:image/webp");
-        const mime = canWebp ? "image/webp" : "image/jpeg";
-        const ext = canWebp ? "webp" : "jpg";
-        canvas.toBlob((blob) => {
-          if (!blob) return reject(new Error("Не удалось обработать аватар"));
-          resolve({ blob, ext, mime });
-        }, mime, 0.88);
-      };
-      img.onerror = () => {
+    const url = URL.createObjectURL(file);
+    const img = await new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => {
         URL.revokeObjectURL(url);
         reject(new Error("Не удалось открыть картинку (если это HEIC с айфона — сделай скриншот или выбери JPG)"));
       };
-      img.src = url;
+      im.src = url;
+    });
+
+    return new Promise((resolve) => {
+      let modal = document.getElementById("modal-avatar-crop");
+      if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "modal-avatar-crop";
+        modal.className = "modal-backdrop hidden";
+        modal.style.zIndex = "260";
+        modal.innerHTML = `
+          <div class="modal-box modal-sm">
+            <div class="modal-head">
+              <h3>Выбери область 1:1</h3>
+              <button class="modal-close" id="crop-close-x">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="crop-stage">
+                <div class="muted-note" style="margin:0;text-align:center;">Двигай пальцем и зумируй ползунком</div>
+                <canvas id="crop-canvas" class="crop-canvas" width="600" height="600"></canvas>
+                <div class="crop-zoom-row">
+                  <span>🔍</span>
+                  <input type="range" id="crop-zoom" min="1" max="4" step="0.02" value="1">
+                  <span id="crop-zoom-val">1.0×</span>
+                </div>
+                <div class="crop-actions">
+                  <button type="button" id="crop-cancel-btn" class="btn-secondary" style="flex:1;">Отмена</button>
+                  <button type="button" id="crop-ok-btn" class="btn-primary" style="flex:2;">Готово — поставить</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+        document.body.appendChild(modal);
+      }
+
+      const canvas = document.getElementById("crop-canvas");
+      const ctx = canvas.getContext("2d");
+      const zoomSlider = document.getElementById("crop-zoom");
+      const zoomVal = document.getElementById("crop-zoom-val");
+      const VIEW = 600;
+      const baseScale = Math.max(VIEW / img.width, VIEW / img.height);
+      let zoom = 1.0, ox = 0, oy = 0;
+
+      const draw = () => {
+        const s = baseScale * zoom;
+        const dw = img.width * s;
+        const dh = img.height * s;
+        const maxOx = Math.max(0, (dw - VIEW) / 2);
+        const maxOy = Math.max(0, (dh - VIEW) / 2);
+        ox = Math.max(-maxOx, Math.min(maxOx, ox));
+        oy = Math.max(-maxOy, Math.min(maxOy, oy));
+        const dx = (VIEW - dw) / 2 + ox;
+        const dy = (VIEW - dh) / 2 + oy;
+
+        ctx.clearRect(0, 0, VIEW, VIEW);
+        ctx.drawImage(img, dx, dy, dw, dh);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, VIEW, VIEW);
+        ctx.arc(VIEW / 2, VIEW / 2, VIEW / 2 - 4, 0, Math.PI * 2, true);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.56)";
+        ctx.fill("evenodd");
+        ctx.beginPath();
+        ctx.arc(VIEW / 2, VIEW / 2, VIEW / 2 - 4, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.restore();
+
+        zoomVal.textContent = `${zoom.toFixed(1)}×`;
+      };
+
+      zoomSlider.value = "1";
+      draw();
+      modal.classList.remove("hidden");
+
+      const activePts = new Map();
+      let lastDist = 0;
+      const pinchDist = () => {
+        const pts = [...activePts.values()];
+        return pts.length >= 2 ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : 0;
+      };
+
+      const onDown = (e) => {
+        e.preventDefault();
+        canvas.setPointerCapture(e.pointerId);
+        activePts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (activePts.size === 2) lastDist = pinchDist();
+      };
+      const onMove = (e) => {
+        if (!activePts.has(e.pointerId)) return;
+        const prev = activePts.get(e.pointerId);
+        const curr = { x: e.clientX, y: e.clientY };
+        const pxScale = VIEW / (canvas.getBoundingClientRect().width || VIEW);
+        if (activePts.size === 1) {
+          ox += (curr.x - prev.x) * pxScale;
+          oy += (curr.y - prev.y) * pxScale;
+          activePts.set(e.pointerId, curr);
+          draw();
+        } else if (activePts.size >= 2) {
+          activePts.set(e.pointerId, curr);
+          const d = pinchDist();
+          if (lastDist > 0 && d > 0) {
+            zoom = Math.max(1, Math.min(4, zoom * (d / lastDist)));
+            zoomSlider.value = zoom.toFixed(2);
+            draw();
+          }
+          lastDist = d;
+        }
+      };
+      const onUp = (e) => {
+        activePts.delete(e.pointerId);
+        if (activePts.size < 2) lastDist = 0;
+      };
+      const onWheel = (e) => {
+        e.preventDefault();
+        zoom = Math.max(1, Math.min(4, zoom - e.deltaY * 0.002));
+        zoomSlider.value = zoom.toFixed(2);
+        draw();
+      };
+      const onSlider = () => {
+        zoom = parseFloat(zoomSlider.value) || 1;
+        draw();
+      };
+
+      let finished = false;
+      const cleanup = () => {
+        canvas.removeEventListener("pointerdown", onDown);
+        canvas.removeEventListener("pointermove", onMove);
+        canvas.removeEventListener("pointerup", onUp);
+        canvas.removeEventListener("pointercancel", onUp);
+        canvas.removeEventListener("wheel", onWheel);
+        zoomSlider.removeEventListener("input", onSlider);
+        document.removeEventListener("keydown", onEsc);
+        modal.classList.add("hidden");
+        URL.revokeObjectURL(url);
+      };
+      const finish = (val) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        resolve(val);
+      };
+      const onEsc = (e) => { if (e.key === "Escape") finish(null); };
+
+      canvas.addEventListener("pointerdown", onDown);
+      canvas.addEventListener("pointermove", onMove);
+      canvas.addEventListener("pointerup", onUp);
+      canvas.addEventListener("pointercancel", onUp);
+      canvas.addEventListener("wheel", onWheel, { passive: false });
+      zoomSlider.addEventListener("input", onSlider);
+      document.addEventListener("keydown", onEsc);
+
+      document.getElementById("crop-close-x").onclick = () => finish(null);
+      document.getElementById("crop-cancel-btn").onclick = () => finish(null);
+      modal.onclick = (e) => { if (e.target === modal) finish(null); };
+
+      document.getElementById("crop-ok-btn").onclick = () => {
+        const s = baseScale * zoom;
+        const dw = img.width * s;
+        const dh = img.height * s;
+        const dx = (VIEW - dw) / 2 + ox;
+        const dy = (VIEW - dh) / 2 + oy;
+        const srcX = Math.max(0, -dx / s);
+        const srcY = Math.max(0, -dy / s);
+        const srcSize = Math.min(img.width - srcX, img.height - srcY, VIEW / s);
+
+        const out = document.createElement("canvas");
+        out.width = 512;
+        out.height = 512;
+        out.getContext("2d").drawImage(img, srcX, srcY, srcSize, srcSize, 0, 0, 512, 512);
+        const canWebp = out.toDataURL("image/webp").startsWith("data:image/webp");
+        const mime = canWebp ? "image/webp" : "image/jpeg";
+        const ext = canWebp ? "webp" : "jpg";
+        out.toBlob((blob) => finish(blob ? { blob, ext, mime } : null), mime, 0.88);
+      };
     });
   }
 
@@ -1839,12 +1999,19 @@
       avBtn.onclick = () => avInp.click();
       avInp.onchange = async () => {
         const f = avInp.files && avInp.files[0];
+        avInp.value = "";
         if (!f) return;
         if (!ensureTokenInteractive()) return;
+        let proc;
+        try {
+          proc = await openAvatarCropper(f);
+        } catch (err) {
+          return alert("Не вышло открыть картинку: " + err.message);
+        }
+        if (!proc) return;
         avBtn.disabled = true;
         avBtn.textContent = "Загружаем аву...";
         try {
-          const proc = await processAvatarForUpload(f);
           const safeKey = myLower.replace(/[^a-z0-9_-]/g, "") || "u";
           const filePath = `uploads/av_${safeKey}_${Date.now()}.${proc.ext}`;
           const prevPath = (state.avatars && state.avatars[myLower]) || "";
@@ -2537,7 +2704,7 @@
           ${renderAvatarHtml("Miralys", "av-md", true)}
           <div>
             <strong>Miralys</strong>
-            <div class="muted-note" style="margin:0;">Постов: ${postCountBy["miralys"] || 0} • Статус: в системе (и вне её)</div>
+            <div class="muted-note" style="margin:0;">Постов: ${postCountBy["miralys"] || 0} • старше вселенной</div>
           </div>
         </div>
         <span class="badge-creator">Создатель</span>
@@ -2631,6 +2798,7 @@
 
     updateAuthUI();
     await loadData();
+    updateAuthUI();
     updateCounts();
     renderFeed();
 
