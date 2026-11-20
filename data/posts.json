@@ -842,5 +842,22 @@
     "likes": [
       "Miralys"
     ]
+  },
+  {
+    "id": "post-20220513-dungeon",
+    "type": "video",
+    "title": "раскопки древнего dungeon",
+    "text": "хуя себе, я уже забыл про существование этого выпуска",
+    "author": "Miralys",
+    "createdAt": "2022-05-13T12:00:00Z",
+    "tags": [
+      "гачимэны",
+      "арабика",
+      "dungeons_team"
+    ],
+    "likes": [],
+    "comments": [],
+    "mediaUrl": "./uploads/post-20220513-dungeon.mp4",
+    "thumbUrl": "./uploads/post-20220513-dungeon_thumb.jpg"
   }
 ]
