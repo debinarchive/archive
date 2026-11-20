@@ -826,7 +826,7 @@
   {
     "id": "book-djan-2025",
     "type": "books",
-    "featured": true,
+    "featured": false,
     "title": "Путь к успеху: от пожарного до кочегара (2 часть)",
     "bookAuthor": "Джан",
     "bookYear": "2025 • 1 стр.",
