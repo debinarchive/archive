@@ -1,5 +1,28 @@
 [
   {
+    "id": "post-1795353110725-de90",
+    "type": "photos",
+    "title": "Великое Творчество Хентайское",
+    "text": "Однажды, мне было очень скучно на паре и я открыл в себе один интересный талант....",
+    "author": "Dr.Hentai",
+    "createdAt": "2026-11-22T13:12:03.250Z",
+    "tags": [
+      "Dr.Hentai",
+      "Фуррьки",
+      "Творчество Хентайское",
+      "Шедевр"
+    ],
+    "likes": [],
+    "comments": [],
+    "mediaUrl": "./uploads/post-1795353110725-de90_0.webp",
+    "mediaUrls": [
+      "./uploads/post-1795353110725-de90_0.webp",
+      "./uploads/post-1795353110725-de90_1.webp",
+      "./uploads/post-1795353110725-de90_2.webp",
+      "./uploads/post-1795353110725-de90_3.webp"
+    ]
+  },
+  {
     "id": "post-1795320281796-fztj",
     "type": "video",
     "title": "гаковские страсти по матвею",
