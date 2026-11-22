@@ -11,7 +11,15 @@
       "Викииич",
       "Miralys"
     ],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1795358739891-ziz",
+        "author": "Miralys",
+        "text": "потому что я тот самый милый ублюдок",
+        "likes": [],
+        "createdAt": "2026-11-22T14:45:39.891Z"
+      }
+    ],
     "mediaUrl": "./uploads/post-1795355248844-tqsy.jpg"
   },
   {
