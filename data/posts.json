@@ -10,7 +10,15 @@
     "likes": [
       "Miralys"
     ],
-    "comments": [],
+    "comments": [
+      {
+        "id": "c-1795441384666-rn1",
+        "author": "Miralys",
+        "text": "ПХАХВХХВХВ",
+        "likes": [],
+        "createdAt": "2026-11-23T13:43:04.666Z"
+      }
+    ],
     "quoteAuthor": "жирное уёбище"
   },
   {
