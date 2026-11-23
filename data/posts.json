@@ -1,19 +1,5 @@
 [
   {
-    "id": "post-1795428644301-3zcp",
-    "type": "quotes",
-    "title": "тест",
-    "text": "- тест\n- тест",
-    "author": "Miralys",
-    "createdAt": "2026-11-23T10:10:44.301Z",
-    "tags": [
-      "тест"
-    ],
-    "likes": [],
-    "comments": [],
-    "quoteAuthor": "тест"
-  },
-  {
     "id": "post-1795355248844-tqsy",
     "type": "photos",
     "title": "ебать тянка",
