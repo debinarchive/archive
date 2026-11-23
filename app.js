@@ -1314,6 +1314,14 @@
     return out;
   }
 
+  function formatQuoteHtml(raw) {
+    const t = String(raw || "").trim();
+    const isDialogue = /(^|\n)\s*[-—–]\s*\S/.test(t) || /(^|\n)\s*[^\n:]{1,24}:\s/.test(t);
+    const hasOuterQuotes = /^[«"„]/.test(t) && /[»"“]$/.test(t);
+    if (isDialogue || hasOuterQuotes) return esc(t);
+    return `«${esc(t)}»`;
+  }
+
   function renderFeed() {
     const grid = document.getElementById("feed-grid");
     const empty = document.getElementById("empty-state");
@@ -1400,7 +1408,7 @@
             <div class="book-cover-title">${esc(post.title)}</div>
           </div>`;
       } else if (post.type === "quotes") {
-        thumbHtml = `<div class="tile-preview-text tile-preview-quote">«${esc(post.text)}»</div>`;
+        thumbHtml = `<div class="tile-preview-text tile-preview-quote">${formatQuoteHtml(post.text)}</div>`;
       } else {
         thumbHtml = `<div class="tile-preview-text">${esc(post.text || "Без описания")}</div>`;
       }
@@ -1748,7 +1756,7 @@
     } else if (post.type === "quotes") {
       mainHtml = `
         <div class="detail-quote-box">
-          «${esc(post.text)}»
+          <div class="detail-quote-text">${formatQuoteHtml(post.text)}</div>
           ${post.quoteAuthor ? `<div class="detail-quote-author">— ${esc(post.quoteAuthor)}</div>` : ""}
         </div>`;
       bodyEl.innerHTML = mainHtml + tailHtml;
@@ -2954,12 +2962,14 @@
 
     const textLabels = {
       thoughts: "Текст мысли",
-      quotes: "Сама цитата (без кавычек)",
+      quotes: "Цитата или диалог (можно с Enter и тире —)",
       photos: "Подпись к фото (по желанию)",
       video: "Описание видео (по желанию)",
       books: "Текст книги (деление на страницы через строку ---)"
     };
     document.getElementById("pub-text-label").textContent = textLabels[type] || "Текст";
+    const qaInp = document.getElementById("pub-quote-author");
+    if (qaInp) qaInp.placeholder = "Кто сказал / где было? (можно пустым)";
 
     let devBox = document.getElementById("pub-dev-box");
     if (!devBox) {

@@ -1800,3 +1800,10 @@ body {
   gap: 0.8rem;
   margin-top: 1.4rem;
 }
+
+
+/* === ПЕРЕНОСЫ СТРОК В ЦИТАТАХ И ДИАЛОГАХ === */
+.tile-preview-text,
+.detail-quote-text {
+  white-space: pre-wrap;
+}
